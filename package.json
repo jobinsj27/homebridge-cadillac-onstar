@@ -1,0 +1,30 @@
+{
+  "name": "homebridge-cadillac-onstar",
+  "displayName": "Cadillac OnStar",
+  "version": "0.3.0",
+  "description": "Momentary Homebridge switches for Cadillac OnStar remote start, stop, lock and unlock",
+  "author": "jobinsj27",
+  "main": "index.js",
+  "license": "MIT",
+  "homepage": "https://github.com/jobinsj27/homebridge-cadillac-onstar#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/jobinsj27/homebridge-cadillac-onstar.git" },
+  "bugs": { "url": "https://github.com/jobinsj27/homebridge-cadillac-onstar/issues" },
+  "keywords": ["homebridge-plugin", "supports-hap", "cadillac", "onstar", "homekit"],
+  "engines": { "node": "^22.12.0 || ^24.0.0 || ^26.0.0", "homebridge": "^1.8.0 || ^2.0.0" },
+  "bin": {
+    "cadillac-onstar-setup": "bin/setup.js",
+    "cadillac-onstar-install-browser": "bin/install-browser.js",
+    "cadillac-onstar-login": "bin/manual-login.js",
+    "cadillac-onstar-check": "bin/check-connection.js",
+    "cadillac-onstar-migrate": "bin/migrate-legacy.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check:sdk": "node scripts/check-sdk.js",
+    "check:package": "node scripts/check-package.js",
+    "prepublishOnly": "npm test && npm run check:sdk && npm run check:package"
+  },
+  "dependencies": { "onstarjs2": "2.16.7" },
+  "files": ["index.js", "lib", "bin", "config.schema.json", "README.md", "LICENSE", "CHANGELOG.md", "docs"],
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" }
+}

@@ -1,0 +1,18 @@
+{
+  "pluginAlias": "CadillacOnStar",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Four momentary command switches: Start, Stop, Lock and Unlock. Turn a switch on to send its command; it resets off after completion or failure. Off does not send a command or indicate vehicle state. Stop cancels remote start. Credentials stay in a private JSON file. Without a credentials file path, this platform remains inactive.",
+  "schema": {
+    "type": "object",
+    "required": ["name"],
+    "properties": {
+      "name": { "title": "Platform name", "type": "string", "default": "Cadillac" },
+      "vehicleName": { "title": "Vehicle display name", "type": "string", "default": "Cadillac", "minLength": 1, "maxLength": 48, "description": "Prefix for the four switch names. Changing this does not change accessory identifiers." },
+      "model": { "title": "Vehicle model label", "type": "string", "default": "OnStar Vehicle", "minLength": 1, "maxLength": 64, "description": "Display-only model label; it does not select the vehicle or prove compatibility." },
+      "credentialsFile": { "title": "Private credentials file", "type": "string", "description": "Explicit absolute path to a mode 0600 JSON file. Leave unset until configured; no controls are registered without it. Do not paste credentials into Homebridge config." },
+      "browserPath": { "title": "Chromium installation directory", "type": "string", "description": "Optional absolute override. Defaults to .cache/homebridge-cadillac-onstar/browsers under Homebridge storage. Browser downloads are for manual sign-in; Homebridge UI excludes .cache from backups." },
+      "accessoryUuidPrefix": { "title": "Accessory identifier namespace", "type": "string", "default": "homebridge-cadillac-onstar", "enum": ["homebridge-cadillac-onstar", "homebridge-escalade-onstar"], "description": "Advanced migration setting. Use the legacy namespace only with the documented cache ownership migration; this setting alone cannot migrate another plugin's cache. Keep it unchanged after pairing." }
+    }
+  }
+}

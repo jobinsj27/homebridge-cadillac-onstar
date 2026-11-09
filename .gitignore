@@ -1,0 +1,17 @@
+node_modules/
+coverage/
+*.tgz
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.npmrc
+.secrets*
+credentials.json
+*_tokens.json
+tokens/
+.cache/
+browsers/
+browser-profile/
+backups/
