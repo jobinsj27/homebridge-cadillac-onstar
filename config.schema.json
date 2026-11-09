@@ -2,17 +2,188 @@
   "pluginAlias": "CadillacOnStar",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Four momentary command switches: Start, Stop, Lock and Unlock. Turn a switch on to send its command; it resets off after completion or failure. Off does not send a command or indicate vehicle state. Stop cancels remote start. Credentials stay in a private JSON file. Without a credentials file path, this platform remains inactive.",
+  "headerDisplay": "Cadillac command switches reset off after each request and do not report vehicle state. Optional Find Car controls sound/cancel the horn and lights. Opt-in location presence creates Home/Work sensors; unavailable GPS never means away. Credentials stay in a private JSON file. Presence locations are stored in this Homebridge configuration and its backups.",
   "schema": {
     "type": "object",
-    "required": ["name"],
+    "required": [
+      "name"
+    ],
     "properties": {
-      "name": { "title": "Platform name", "type": "string", "default": "Cadillac" },
-      "vehicleName": { "title": "Vehicle display name", "type": "string", "default": "Cadillac", "minLength": 1, "maxLength": 48, "description": "Prefix for the four switch names. Changing this does not change accessory identifiers." },
-      "model": { "title": "Vehicle model label", "type": "string", "default": "OnStar Vehicle", "minLength": 1, "maxLength": 64, "description": "Display-only model label; it does not select the vehicle or prove compatibility." },
-      "credentialsFile": { "title": "Private credentials file", "type": "string", "description": "Explicit absolute path to a mode 0600 JSON file. Leave unset until configured; no controls are registered without it. Do not paste credentials into Homebridge config." },
-      "browserPath": { "title": "Chromium installation directory", "type": "string", "description": "Optional absolute override. Defaults to .cache/homebridge-cadillac-onstar/browsers under Homebridge storage. Browser downloads are for manual sign-in; Homebridge UI excludes .cache from backups." },
-      "accessoryUuidPrefix": { "title": "Accessory identifier namespace", "type": "string", "default": "homebridge-cadillac-onstar", "enum": ["homebridge-cadillac-onstar", "homebridge-escalade-onstar"], "description": "Advanced migration setting. Use the legacy namespace only with the documented cache ownership migration; this setting alone cannot migrate another plugin's cache. Keep it unchanged after pairing." }
+      "name": {
+        "title": "Platform name",
+        "type": "string",
+        "default": "Cadillac"
+      },
+      "vehicleName": {
+        "title": "Vehicle display name",
+        "type": "string",
+        "default": "Cadillac",
+        "minLength": 1,
+        "maxLength": 48,
+        "description": "Prefix for command and presence accessories. Changing this does not change accessory identifiers."
+      },
+      "model": {
+        "title": "Vehicle model label",
+        "type": "string",
+        "default": "OnStar Vehicle",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "Display-only model label; it does not select the vehicle or prove compatibility."
+      },
+      "credentialsFile": {
+        "title": "Private credentials file",
+        "type": "string",
+        "description": "Explicit absolute path to a mode 0600 JSON file. Leave unset until configured; no controls are registered without it. Do not paste credentials into Homebridge config."
+      },
+      "browserPath": {
+        "title": "Chromium installation directory",
+        "type": "string",
+        "description": "Optional absolute override. Defaults to .cache/homebridge-cadillac-onstar/browsers under Homebridge storage. Browser downloads are for manual sign-in; Homebridge UI excludes .cache from backups."
+      },
+      "accessoryUuidPrefix": {
+        "title": "Accessory identifier namespace",
+        "type": "string",
+        "default": "homebridge-cadillac-onstar",
+        "enum": [
+          "homebridge-cadillac-onstar",
+          "homebridge-escalade-onstar"
+        ],
+        "description": "Advanced migration setting. Use the legacy namespace only with the documented cache ownership migration; this setting alone cannot migrate another plugin's cache. Keep it unchanged after pairing."
+      },
+      "controls": {
+        "title": "Command controls",
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Choose which controls appear in Apple Home. Turning a control off here removes its accessory; enabling it again restores the same accessory identifier.",
+        "properties": {
+          "start": {
+            "title": "Start",
+            "type": "boolean",
+            "default": true
+          },
+          "stop": {
+            "title": "Stop remote start",
+            "type": "boolean",
+            "default": true
+          },
+          "lock": {
+            "title": "Lock doors",
+            "type": "boolean",
+            "default": true
+          },
+          "unlock": {
+            "title": "Unlock doors",
+            "type": "boolean",
+            "default": true
+          },
+          "findCar": {
+            "title": "Find Car and Stop Alert",
+            "type": "boolean",
+            "default": false,
+            "description": "Adds two momentary switches for sounding the horn/flashing the lights and cancelling the alert. Enable only if these commands work in your myCadillac app."
+          }
+        }
+      },
+      "presence": {
+        "title": "Vehicle presence",
+        "type": "object",
+        "description": "Vehicle location only; it does not establish whether people are home. Fresh confirmed crossings can trigger Home automations. Initial and recovered readings establish a baseline without publishing a crossing event.",
+        "properties": {
+          "enabled": {
+            "title": "Enable location polling",
+            "type": "boolean",
+            "default": false,
+            "description": "Off by default. Polling requests a vehicle location update through OnStar; its latency and availability vary."
+          },
+          "pollIntervalSeconds": {
+            "title": "Polling interval (seconds)",
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400,
+            "default": 300,
+            "description": "Time between completed polls. All places share one location request. Errors back off automatically; a lower value does not guarantee fresher location."
+          },
+          "maxLocationAgeSeconds": {
+            "title": "Maximum location age (seconds)",
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 86400,
+            "default": 600,
+            "description": "Must be at least the polling interval. Older readings are unavailable and cannot trigger arrival/departure."
+          },
+          "confirmationSamples": {
+            "title": "Distinct readings to confirm presence",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "default": 2,
+            "description": "Repeated copies of the same GPS fix do not count as new confirmations."
+          },
+          "exposeSwitch": {
+            "title": "Show presence switch tiles too",
+            "type": "boolean",
+            "default": false,
+            "description": "Adds a status-only switch mirror for each sensor. Manual changes are rejected; tapping cannot change GPS presence."
+          },
+          "locations": {
+            "title": "Named places",
+            "type": "array",
+            "default": [],
+            "maxItems": 20,
+            "description": "Provide at least one place when enabled. Coordinates remain in your Homebridge config and backups; the plugin does not log them or retain trip history.",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "latitude",
+                "longitude"
+              ],
+              "properties": {
+                "id": {
+                  "title": "Stable place ID",
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$",
+                  "description": "Unique ID such as home or work. Keep it unchanged to preserve Home accessories and automations."
+                },
+                "name": {
+                  "title": "Place display name",
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 48,
+                  "description": "For example Home or Work; defaults to the place ID."
+                },
+                "latitude": {
+                  "title": "Latitude",
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
+                },
+                "longitude": {
+                  "title": "Longitude",
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
+                },
+                "arrivalRadiusMeters": {
+                  "title": "Arrival radius (metres)",
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100000,
+                  "default": 150
+                },
+                "departureRadiusMeters": {
+                  "title": "Departure radius (metres)",
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 100000,
+                  "default": 250,
+                  "description": "Must exceed the arrival radius to prevent GPS drift from toggling presence."
+                }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

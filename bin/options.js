@@ -3,7 +3,7 @@
 const os = require('node:os');
 const path = require('node:path');
 
-const ACTIONS = Object.freeze(['inspect', 'unlock', 'lock']);
+const ACTIONS = Object.freeze(['inspect', 'location', 'unlock', 'lock']);
 
 function invalidArguments() {
   return Object.assign(new Error('Invalid command-line arguments.'), { code: 'INVALID_ARGUMENTS' });

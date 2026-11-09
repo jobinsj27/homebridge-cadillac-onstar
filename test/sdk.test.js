@@ -82,6 +82,13 @@ class TokenWriter {
 globalThis.TokenWriter = TokenWriter;
 `;
 
+test('token-write instrumentation preserves the SDK strict-mode directive', () => {
+  const context = vm.createContext({ fs, path });
+  vm.runInContext(secureTokenWrites("'use strict';\n" + tokenWriterSource)
+    + '\nglobalThis.strictReceiver = (function() { return this; })();', context);
+  assert.equal(context.strictReceiver, undefined);
+});
+
 test('both Microsoft write paths and the GM write path create private token files', (t) => {
   const directory = temporaryTokenDirectory(t);
   const context = vm.createContext({ fs, path });
@@ -97,6 +104,31 @@ test('both Microsoft write paths and the GM write path create private token file
   writer.saveGMToken();
   assert.equal(fs.statSync(writer.GMTokenPath).mode & 0o777, 0o600);
   assert.equal(JSON.parse(fs.readFileSync(writer.GMTokenPath, 'utf8')).access_token, 'synthetic-gm-token');
+});
+
+test('failed atomic token replacement preserves the previous valid saved session', (t) => {
+  const directory = temporaryTokenDirectory(t);
+  const filename = path.join(directory, 'microsoft_tokens.json');
+  fs.writeFileSync(filename, '{"access_token":"synthetic-previous"}', { mode: 0o600 });
+  const filesystem = { ...fs, renameSync: () => { throw new Error('Synthetic disk failure'); } };
+  const context = vm.createContext({ fs: filesystem, path });
+  vm.runInContext(secureTokenWrites(tokenWriterSource), context);
+  const writer = new context.TokenWriter(directory);
+  assert.throws(() => writer.refreshedMicrosoftToken({ access_token: 'synthetic-new' }));
+  assert.equal(JSON.parse(fs.readFileSync(filename, 'utf8')).access_token, 'synthetic-previous');
+  assert.deepEqual(fs.readdirSync(directory), ['microsoft_tokens.json']);
+  assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
+});
+
+test('a temporary token filename collision never deletes another writers file', (t) => {
+  const directory = temporaryTokenDirectory(t);
+  const collision = path.join(directory, 'microsoft_tokens.json.123..tmp');
+  fs.writeFileSync(collision, 'synthetic-other-writer', { mode: 0o600 });
+  const context = vm.createContext({ fs, path, Date: { now: () => 123 }, Math: { random: () => 0 } });
+  vm.runInContext(secureTokenWrites(tokenWriterSource), context);
+  const writer = new context.TokenWriter(directory);
+  assert.throws(() => writer.refreshedMicrosoftToken({ access_token: 'synthetic-new' }), { code: 'EEXIST' });
+  assert.equal(fs.readFileSync(collision, 'utf8'), 'synthetic-other-writer');
 });
 
 test('existing Microsoft and GM token files become private before authentication reads them', async (t) => {

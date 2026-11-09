@@ -107,3 +107,58 @@ test('worker transport rejects concurrent requests without queuing them', async 
   assert.deepEqual(worker.messages, [{ method: 'lockDoor' }]);
   await client.shutdown();
 });
+
+function fakeClock() {
+  const timers = new Map(); let next = 0;
+  return { timers, setTimer: (callback, delay) => { const id = ++next; timers.set(id, { callback, delay }); return id; },
+    clearTimer: (id) => timers.delete(id) };
+}
+
+test('location and alert methods dispatch only their explicit names', async () => {
+  const { client, worker } = await readyClient();
+  for (const method of ['location', 'alert', 'cancelAlert']) {
+    const request = client[method]();
+    assert.deepEqual(worker.messages.at(-1), { method });
+    const result = method === 'location' ? { latitude: 12, longitude: 34, observedAt: 1000 } : { status: 'success' };
+    worker.emit('message', { result }); assert.deepEqual(await request, result);
+  }
+  client.shutdown();
+});
+
+test('a hung location read times out and closes the worker without replay or late result delivery', async () => {
+  const clock = fakeClock();
+  const creating = createClient('/synthetic/credentials.json', undefined, clock);
+  const worker = FakeWorker.instances.at(-1);
+  assert.equal([...clock.timers.values()][0].delay, 15000);
+  worker.emit('message', { ready: true }); const client = await creating;
+  assert.equal(clock.timers.size, 0);
+  const request = client.location();
+  const rejected = assert.rejects(request, { code: 'COMMAND_FAILED' });
+  assert.equal([...clock.timers.values()][0].delay, 35000);
+  [...clock.timers.values()][0].callback();
+  await rejected;
+  assert.equal(worker.terminated, true); assert.equal(client.closed, true);
+  worker.emit('message', { result: { latitude: 1, longitude: 2, observedAt: 3 } });
+  await assert.rejects(client.lockDoor(), { code: 'COMMAND_FAILED' });
+  assert.deepEqual(worker.messages, [{ method: 'location' }]);
+  assert.equal(clock.timers.size, 0);
+});
+
+test('startup deadline closes a worker that never becomes ready', async () => {
+  const clock = fakeClock();
+  const request = createClient('/synthetic/credentials.json', undefined, clock);
+  const rejected = assert.rejects(request, { code: 'CREDENTIALS' });
+  [...clock.timers.values()][0].callback(); await rejected;
+  assert.equal(FakeWorker.instances.at(-1).terminated, true);
+  assert.equal(clock.timers.size, 0);
+});
+
+test('only the allowlisted unavailable-location code survives the worker boundary', async () => {
+  const { client, worker } = await readyClient();
+  for (const [code, expected] of [['LOCATION_UNAVAILABLE', 'LOCATION_UNAVAILABLE'], ['SECRET_RAW_ERROR', 'COMMAND_FAILED']]) {
+    const request = client.location();
+    worker.emit('message', { error: code });
+    await assert.rejects(request, { code: expected });
+  }
+  await client.shutdown();
+});

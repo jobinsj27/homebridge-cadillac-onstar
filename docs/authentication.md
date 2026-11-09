@@ -28,7 +28,7 @@ Set the plugin's `credentialsFile` option to the absolute path of that file. The
 cadillac-onstar-install-browser --state-dir /absolute/path/to/private-cadillac-state
 ```
 
-This explicitly downloads the Chromium revision used by the installed OnStarJS2 dependency. It does not read credentials or sign in. Linux hosts also need Chromium's operating-system libraries and a graphical display; install those through your operating system or container image. Browser installation is not an npm post-install step.
+This explicitly downloads the Chromium revision used by the installed OnStarJS2 dependency. It does not read credentials or sign in. Linux hosts also need Chromium's operating-system libraries and a graphical display; install those through your operating system or container image. Install the npm package with `--ignore-scripts` to keep this download explicit: the upstream dependency also has a browser-download post-install script, which some UI-managed installations may run.
 
 ## Sign in
 

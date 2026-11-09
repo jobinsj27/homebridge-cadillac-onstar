@@ -29,7 +29,7 @@ test('ambiguous, unknown, relative, missing, duplicate, and NUL arguments are re
   for (const args of [null, {}, ['--unknown'], ['--state-dir'], ['--state-dir', 'relative'],
     ['--credentials-file', '~/credentials.json'], ['--state-dir', '/one', '--state-dir', '/two'],
     ['--credentials-file', '/a\0b'], ['--state-dir', '--credentials-file', '/example/file'],
-    ['--help', '--state-dir', '/example'], ['inspect'], ['--inspect-page'], ['--no-sandbox'], [42]]) {
+    ['--help', '--state-dir', '/example'], ['inspect'], ['location'], ['--inspect-page'], ['--no-sandbox'], [42]]) {
     assert.throws(() => parseOptions(args, context), { code: 'INVALID_ARGUMENTS' });
   }
   assert.throws(() => parseOptions([], { env: { HOMEBRIDGE_STORAGE_PATH: 'relative' } }), { code: 'INVALID_ARGUMENTS' });
@@ -40,8 +40,18 @@ test('login-only flags are opt in and cannot smuggle an action or credentials in
   assert.equal(options.inspectOnly, true);
   assert.equal(options.noSandbox, true);
   assert.equal(loginArgs([], context).noSandbox, false);
-  for (const args of [['lock'], ['start'], ['--password', 'secret-marker'], ['--inspect-page', '--inspect-page']]) {
+  for (const args of [['lock'], ['start'], ['location'], ['--password', 'secret-marker'], ['--inspect-page', '--inspect-page']]) {
     assert.throws(() => loginArgs(args, context), { code: 'INVALID_ARGUMENTS' });
   }
   assert.deepEqual(loginArgs(['--help'], context), { help: true });
+});
+
+test('location is accepted only by helpers that explicitly enable check actions', () => {
+  assert.equal(parseOptions(['location'], { ...context, action: true }).action, 'location');
+  assert.equal(parseOptions([], { ...context, action: true }).action, 'inspect');
+  for (const options of [context, { ...context, login: true }]) {
+    assert.throws(() => parseOptions(['location'], options), { code: 'INVALID_ARGUMENTS' });
+  }
+  assert.throws(() => parseOptions(['inspect', 'location'], { ...context, action: true }),
+    { code: 'INVALID_ARGUMENTS' });
 });
