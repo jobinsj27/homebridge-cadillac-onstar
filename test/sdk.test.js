@@ -6,13 +6,90 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
-const { assertSupportedSource, secureTokenWrites, SAVED_SESSION_PATCH, PINNED_VERSION } = require('../lib/sdk');
+const { createClient, assertSupportedSource, secureTokenWrites, SAVED_SESSION_PATCH, PINNED_VERSION,
+  LOCATION_POLLING_TIMEOUT_SECONDS } = require('../lib/sdk');
 
 const identity = {
   username: 'synthetic@example.test',
   deviceId: '8e934cd0-8093-4bee-9ac4-5034e02f7548',
   tokenLocation: '/synthetic/private/tokens',
 };
+
+test('location permits a parked vehicle refresh beyond sixty seconds using the real SDK polling loop', async (t) => {
+  const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+  const service = client.requestService;
+  const previousTimeout = service.requestPollingTimeoutSeconds;
+  service.config.max429Retries = 4;
+  let now = 1000000;
+  const startedAt = now;
+  let requests = 0;
+  t.mock.method(Date, 'now', () => now);
+  // Only the pinned SDK's polling loop runs. These stubs prevent all HTTP,
+  // authentication, account-file reads and real waits.
+  service.delay = async milliseconds => { now += milliseconds; };
+  service.sendRequest = async () => {
+    requests += 1;
+    assert.equal(service.requestPollingTimeoutSeconds, 90);
+    assert.equal(service.config.max429Retries, 0);
+    return { status: 'success', response: { data: { telemetry: { data: {
+      session: { updatePending: now - startedAt >= 78000 ? 'NONE' : 'PENDING' },
+    } } } } };
+  };
+  const result = await client.location();
+  assert.equal(LOCATION_POLLING_TIMEOUT_SECONDS, 90);
+  assert.equal(now - startedAt, 78000);
+  assert.equal(requests, 14);
+  assert.equal(result.response.data.telemetry.data.session.updatePending, 'NONE');
+  assert.equal(service.requestPollingTimeoutSeconds, previousTimeout);
+  assert.equal(service.config.max429Retries, 4);
+});
+
+test('location restores previous polling and retry settings after success or failure', async () => {
+  for (const rejects of [false, true]) {
+    const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+    const service = client.requestService;
+    service.setRequestPollingTimeoutSeconds(45);
+    const previousRetries = service.config.max429Retries;
+    const failure = new Error('synthetic-location-failure');
+    const result = { synthetic: true };
+    service.location = async () => {
+      assert.equal(service.requestPollingTimeoutSeconds, 90);
+      assert.equal(service.config.max429Retries, 0);
+      if (rejects) throw failure;
+      return result;
+    };
+    if (rejects) await assert.rejects(client.location(), error => error === failure);
+    else assert.equal(await client.location(), result);
+    assert.equal(service.requestPollingTimeoutSeconds, 45);
+    assert.equal(service.config.max429Retries, previousRetries);
+  }
+});
+
+test('a still-pending refresh stops at the location polling budget and remains unusable', async (t) => {
+  const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+  const service = client.requestService;
+  const previousTimeout = service.requestPollingTimeoutSeconds;
+  const previousRetries = service.config.max429Retries;
+  let now = 1000000;
+  const startedAt = now;
+  let requests = 0;
+  t.mock.method(Date, 'now', () => now);
+  service.delay = async milliseconds => { now += milliseconds; };
+  service.sendRequest = async () => {
+    requests += 1;
+    return { status: 'success', response: { data: { telemetry: {
+      occurredTs: new Date(now).toISOString(), data: {
+        session: { updatePending: 'PENDING' }, position: { lat: 0, lng: 0 },
+      },
+    } } } };
+  };
+  const result = await client.location();
+  assert.equal(now - startedAt, 90000);
+  assert.equal(requests, 16);
+  assert.throws(() => require('../lib/location').normalizeLocationResult(result), { code: 'LOCATION_UNAVAILABLE' });
+  assert.equal(service.requestPollingTimeoutSeconds, previousTimeout);
+  assert.equal(service.config.max429Retries, previousRetries);
+});
 
 function patchedSdk(overrides = {}, filesystem = { existsSync: () => false }) {
   const browserCalls = [];

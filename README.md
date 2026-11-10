@@ -123,7 +123,7 @@ Omitted flags keep their defaults. Use JSON booleans, not strings. Disabling a c
 
 Only an explicit on-write to a command switch requests an engine, door, or alert action. Startup, reconnection, accessory reads, off-writes, switch resets, timers, and shutdown do not request those actions. When presence is enabled, background timers separately request vehicle-location telemetry; HomeKit reads use the latest local result.
 
-Only one vehicle operation may run at a time. Additional command requests are rejected as busy rather than queued. A background location poll skips a busy command; a manual command during an in-flight location read also returns Busy. Runtime location reads have a 35-second deadline. Failed commands are not retried by the plugin. OnStarJS2 retains its upstream API-version fallback behavior.
+Only one vehicle operation may run at a time. Additional command requests are rejected as busy rather than queued. A background location poll skips a busy command; a manual command during an in-flight location read also returns Busy. Location refreshes allow up to 90 seconds of SDK polling within a 120-second runtime request deadline. Failed commands are not retried by the plugin. OnStarJS2 retains its upstream API-version fallback behavior.
 
 A repeated Start request during a locally tracked session is ignored rather than extending the session. Stop is sent when explicitly requested even if the plugin did not start the session, including after a Homebridge restart.
 

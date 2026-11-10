@@ -28,7 +28,7 @@ class FakeWorker extends EventEmitter {
 const mockedWorker = mock.method(workerThreads, 'Worker', function (...args) {
   return new FakeWorker(...args);
 });
-const { createClient } = require('../lib/client');
+const { createClient, LOCATION_TIMEOUT_MS } = require('../lib/client');
 mockedWorker.mock.restore();
 
 async function readyClient() {
@@ -109,9 +109,20 @@ test('worker transport rejects concurrent requests without queuing them', async 
 });
 
 function fakeClock() {
-  const timers = new Map(); let next = 0;
-  return { timers, setTimer: (callback, delay) => { const id = ++next; timers.set(id, { callback, delay }); return id; },
-    clearTimer: (id) => timers.delete(id) };
+  const timers = new Map(); let next = 0; let now = 0;
+  return { timers, setTimer: (callback, delay) => {
+    const id = ++next; timers.set(id, { callback, delay, at: now + delay }); return id;
+  }, clearTimer: (id) => timers.delete(id), async advance(delay) {
+    const until = now + delay;
+    while (true) {
+      const pending = [...timers].sort((a, b) => a[1].at - b[1].at).find(([, timer]) => timer.at <= until);
+      if (!pending) break;
+      const [id, timer] = pending;
+      now = timer.at; timers.delete(id); timer.callback();
+      await Promise.resolve();
+    }
+    now = until;
+  } };
 }
 
 test('location and alert methods dispatch only their explicit names', async () => {
@@ -134,14 +145,40 @@ test('a hung location read times out and closes the worker without replay or lat
   assert.equal(clock.timers.size, 0);
   const request = client.location();
   const rejected = assert.rejects(request, { code: 'COMMAND_FAILED' });
-  assert.equal([...clock.timers.values()][0].delay, 35000);
-  [...clock.timers.values()][0].callback();
+  assert.equal(LOCATION_TIMEOUT_MS, 120000);
+  assert.equal([...clock.timers.values()][0].delay, 120000);
+  await clock.advance(119999);
+  assert.equal(client.closed, false);
+  assert.equal(worker.terminated, false);
+  await clock.advance(1);
   await rejected;
   assert.equal(worker.terminated, true); assert.equal(client.closed, true);
   worker.emit('message', { result: { latitude: 1, longitude: 2, observedAt: 3 } });
   await assert.rejects(client.lockDoor(), { code: 'COMMAND_FAILED' });
   assert.deepEqual(worker.messages, [{ method: 'location' }]);
   assert.equal(clock.timers.size, 0);
+});
+
+test('a location response after vehicle wake succeeds beyond the old deadline without changing command timeouts', async () => {
+  const clock = fakeClock();
+  const creating = createClient('/synthetic/credentials.json', undefined, clock);
+  const worker = FakeWorker.instances.at(-1);
+  worker.emit('message', { ready: true });
+  const client = await creating;
+  const request = client.location();
+  await clock.advance(105000);
+  assert.equal(client.closed, false);
+  assert.equal(worker.terminated, false);
+  const result = { latitude: 1, longitude: 2, observedAt: 3 };
+  worker.emit('message', { result });
+  assert.deepEqual(await request, result);
+  assert.equal(clock.timers.size, 0);
+  const command = client.lockDoor();
+  assert.equal([...clock.timers.values()][0].delay, 120000);
+  worker.emit('message', { result: { status: 'success' } });
+  await command;
+  assert.deepEqual(worker.messages, [{ method: 'location' }, { method: 'lockDoor' }]);
+  await client.shutdown();
 });
 
 test('startup deadline closes a worker that never becomes ready', async () => {
