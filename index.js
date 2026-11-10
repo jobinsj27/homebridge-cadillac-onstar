@@ -4,6 +4,8 @@ const path = require('node:path');
 const { VehicleController } = require('./lib/controller');
 const { createClient } = require('./lib/client');
 const { normalizePresenceConfig, PresenceMonitor } = require('./lib/presence');
+const { EventPresenceMonitor } = require('./lib/event-presence');
+const { PresenceWebhook } = require('./lib/presence-webhook');
 const PLUGIN = 'homebridge-cadillac-onstar';
 const LEGACY_UUID_PREFIX = 'homebridge-escalade-onstar';
 const PLATFORM = 'CadillacOnStar';
@@ -63,6 +65,7 @@ class CadillacPlatform {
       this.closed = true;
       for (const handle of this.resetHandles) clearImmediate(handle);
       this.resetHandles.clear();
+      void this.presenceWebhook?.shutdown();
       this.presenceMonitor?.shutdown();
       this.controller.shutdown();
     });
@@ -141,11 +144,10 @@ class CadillacPlatform {
       this.cached.set(id, accessory);
     }
     if (this.presenceConfig.enabled) {
-      this.presenceMonitor = new PresenceMonitor({
-        config: this.presenceConfig,
-        readLocation: () => this.readPresenceLocation(),
-        onUpdate: snapshot => this.updatePresence(snapshot),
-      });
+      const options = { config: this.presenceConfig, onUpdate: snapshot => this.updatePresence(snapshot) };
+      this.presenceMonitor = this.presenceConfig.source === 'events'
+        ? new EventPresenceMonitor({ ...options, stateFile: this.presenceConfig.webhook.stateFile })
+        : new PresenceMonitor({ ...options, readLocation: () => this.readPresenceLocation() });
       for (const place of this.presenceConfig.locations) {
         const sensors = [];
         for (const mirror of this.presenceConfig.exposeSwitch ? [false, true] : [false]) {
@@ -174,7 +176,7 @@ class CadillacPlatform {
           });
           if (mirror) {
             characteristic.onSet(() => {
-              // A Home tile must never impersonate a GPS reading.
+              // A Home tile must never impersonate a presence observation.
               throw new this.api.hap.HapStatusError(this.api.hap.HAPStatus.READ_ONLY_CHARACTERISTIC);
             });
           } else {
@@ -198,7 +200,38 @@ class CadillacPlatform {
         this.removeCached(id);
       }
     }
-    this.presenceMonitor?.start();
+    if (this.presenceConfig.source === 'events') this.startEventPresence();
+    else this.presenceMonitor?.start();
+  }
+
+  startEventPresence() {
+    if (!this.presenceMonitor || this.closed) return;
+    const failed = () => {
+      if (this.closed || this.eventPresenceFailed) return;
+      this.eventPresenceFailed = true;
+      this.presenceMonitor.shutdown();
+      for (const place of this.presenceConfig.locations) {
+        this.updatePresence({ id: place.id, available: false });
+      }
+      void this.presenceWebhook?.shutdown();
+      this.log.warn('Presence alert input is unavailable. Check private event files and listener settings, then restart Homebridge.');
+    };
+    try {
+      this.presenceMonitor.start();
+      this.presenceWebhook = new PresenceWebhook({
+        ...this.presenceConfig.webhook,
+        onEvent: event => this.presenceMonitor.accept(event),
+        onError: failed,
+      });
+      this.presenceReady = this.presenceWebhook.start().then(() => {
+        if (!this.closed && !this.eventPresenceFailed) {
+          this.log.info?.('Presence alert input is ready; scheduled GPS polling is disabled.');
+        }
+      }).catch(failed);
+    } catch {
+      failed();
+      this.presenceReady = Promise.resolve();
+    }
   }
 
   removeCached(id) {

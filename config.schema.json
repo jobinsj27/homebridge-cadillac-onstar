@@ -90,10 +90,54 @@
         "description": "Vehicle location only; it does not establish whether people are home. Fresh confirmed crossings can trigger Home automations. Initial and recovered readings establish a baseline without publishing a crossing event.",
         "properties": {
           "enabled": {
-            "title": "Enable location polling",
+            "title": "Enable vehicle presence",
             "type": "boolean",
             "default": false,
-            "description": "Off by default. Polling requests a vehicle location update through OnStar; its latency and availability vary."
+            "description": "Off by default. Choose GPS polling or authenticated arrival/departure alerts as the presence source."
+          },
+          "source": {
+            "title": "Presence source",
+            "type": "string",
+            "enum": ["polling", "events"],
+            "default": "polling",
+            "description": "Events uses an external SMS/email relay and disables all scheduled GPS polling. Requires real arrival/departure alerts; see the event presence guide."
+          },
+          "webhook": {
+            "title": "Alert input (events source only)",
+            "type": "object",
+            "properties": {
+              "host": {
+                "title": "Listen IP address",
+                "type": "string",
+                "default": "127.0.0.1",
+                "description": "Loopback by default. For a remote relay, use a private network and an authenticated HTTPS proxy."
+              },
+              "port": {
+                "title": "Listen port",
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 65535,
+                "default": 8584
+              },
+              "tokenFile": {
+                "title": "Private bearer token file",
+                "type": "string",
+                "description": "Required absolute path in events mode. Dedicated mode 0600 file containing a random token; never paste the token into this configuration."
+              },
+              "stateFile": {
+                "title": "Private presence state file",
+                "type": "string",
+                "description": "Required absolute path in events mode. A dedicated file in a mode 0700 directory, separate from credentials and token files."
+              },
+              "maxEventAgeSeconds": {
+                "title": "Maximum incoming alert age (seconds)",
+                "type": "integer",
+                "minimum": 60,
+                "maximum": 86400,
+                "default": 3600,
+                "description": "Reject incoming alerts older than this. The last accepted presence state persists until another event; this is not a parked-car expiry timer."
+              }
+            }
           },
           "pollIntervalSeconds": {
             "title": "Polling interval (seconds)",
@@ -101,7 +145,7 @@
             "minimum": 60,
             "maximum": 86400,
             "default": 300,
-            "description": "Time between completed polls. All places share one location request. Errors back off automatically; a lower value does not guarantee fresher location."
+            "description": "Polling source only. Time between completed polls. All places share one location request. Errors back off automatically; a lower value does not guarantee fresher location."
           },
           "maxLocationAgeSeconds": {
             "title": "Maximum location age (seconds)",
@@ -123,20 +167,18 @@
             "title": "Show presence switch tiles too",
             "type": "boolean",
             "default": false,
-            "description": "Adds a status-only switch mirror for each sensor. Manual changes are rejected; tapping cannot change GPS presence."
+            "description": "Adds a status-only switch mirror for each sensor. Manual changes are rejected; tapping cannot change presence."
           },
           "locations": {
             "title": "Named places",
             "type": "array",
             "default": [],
             "maxItems": 20,
-            "description": "Provide at least one place when enabled. Coordinates remain in your Homebridge config and backups; the plugin does not log them or retain trip history.",
+            "description": "Provide at least one place when enabled. Polling requires coordinates; events needs only a stable ID and name. Coordinates remain in your Homebridge config and backups.",
             "items": {
               "type": "object",
               "required": [
-                "id",
-                "latitude",
-                "longitude"
+                "id"
               ],
               "properties": {
                 "id": {

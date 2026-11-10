@@ -1,10 +1,28 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { mock, test } = require('node:test');
 const clientModule = require('../lib/client');
 const presenceModule = require('../lib/presence');
+const webhookModule = require('../lib/presence-webhook');
+
+let nextWebhookError;
+class FakePresenceWebhook {
+  constructor(options) { this.options = options; this.closed = false; }
+  async start() {
+    const error = nextWebhookError;
+    nextWebhookError = undefined;
+    if (error) throw error;
+  }
+  async shutdown() { this.closed = true; }
+}
+const webhookMock = mock.method(webhookModule, 'PresenceWebhook', function (options) {
+  return new FakePresenceWebhook(options);
+});
 
 class FakePresenceMonitor {
   constructor(options) { this.options = options; this.states = new Map(); this.starts = 0; this.closed = false; }
@@ -27,6 +45,7 @@ const createClientMock = mock.method(clientModule, 'createClient', async (...arg
 const { CadillacPlatform } = require('../index');
 createClientMock.mock.restore();
 presenceMock.mock.restore();
+webhookMock.mock.restore();
 
 const C = { On: {}, Name: {}, Manufacturer: {}, Model: {}, SerialNumber: {},
   OccupancyDetected: {}, StatusActive: {}, StatusFault: { NO_FAULT: 0, GENERAL_FAULT: 1 } };
@@ -407,6 +426,90 @@ test('control toggles remove only exact disabled IDs and reenable the same ident
 const place = { id: 'home', name: 'Home', latitude: 12, longitude: 34 };
 const presenceConfig = overrides => ({ credentialsFile: '/synthetic/private/credentials.json',
   presence: { enabled: true, locations: [place], ...overrides } });
+
+function eventFixture(t) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cadillac-platform-events-'));
+  fs.chmodSync(directory, 0o700);
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const config = presenceConfig({ source: 'events', exposeSwitch: true,
+    locations: [{ id: 'home', name: 'Home' }], webhook: {
+      tokenFile: path.join(directory, 'event.token'), stateFile: path.join(directory, 'state.json'),
+    } });
+  const result = fixture(config);
+  t.after(() => result.api.emit('shutdown'));
+  return { ...result, config };
+}
+
+test('event presence retains accessory IDs, persists crossings, and never opens an OnStar client', async t => {
+  const before = clientCreations;
+  const f = eventFixture(t);
+  f.api.emit('didFinishLaunching');
+  await f.platform.presenceReady;
+  const mirror = f.api.registered.find(a => a.context.kind === 'presence-switch').getService(Service.Switch);
+  const sensor = f.api.registered.find(a => a.context.kind === 'presence').getService(Service.OccupancySensor);
+  const characteristic = mirror.getCharacteristic(C.On);
+  assert.throws(() => characteristic.get(), { hapStatus: -70402 });
+  assert.throws(() => characteristic.set(true), { hapStatus: -70404 });
+  const arrived = { eventId: 'message-one', locationId: 'home', event: 'arrived',
+    occurredAt: new Date(Date.now() - 2000).toISOString() };
+  const departed = { ...arrived, eventId: 'message-two', event: 'departed',
+    occurredAt: new Date(Date.now() - 1000).toISOString() };
+  f.platform.presenceWebhook.options.onEvent(arrived);
+  assert.equal(characteristic.get(), true);
+  assert.equal(sensor.getCharacteristic(C.OccupancyDetected).value, 1);
+  assert.equal(mirror.updates.filter(u => u.key === C.On).length, 0, 'first event is a silent baseline');
+  f.platform.presenceWebhook.options.onEvent(departed);
+  assert.equal(characteristic.get(), false);
+  assert.deepEqual(mirror.updates.filter(u => u.key === C.On).map(u => u.value), [false]);
+  f.api.emit('shutdown');
+  assert.equal(f.platform.presenceWebhook.closed, true);
+  const restarted = fixture(f.config);
+  t.after(() => restarted.api.emit('shutdown'));
+  for (const accessory of f.api.registered) restarted.platform.configureAccessory(accessory);
+  restarted.api.emit('didFinishLaunching');
+  await restarted.platform.presenceReady;
+  assert.equal(restarted.api.registered.length, 0);
+  assert.equal(restarted.api.unregistered.length, 0);
+  assert.equal(characteristic.get(), false);
+  assert.equal(restarted.platform.presenceMonitor.getState('home').available, true);
+  const polling = fixture(presenceConfig({ exposeSwitch: true }));
+  polling.api.emit('didFinishLaunching');
+  assert.deepEqual(polling.api.registered.map(a => a.UUID), f.api.registered.map(a => a.UUID));
+  polling.api.emit('shutdown');
+  assert.equal(clientCreations, before);
+});
+
+test('event listener failure leaves commands available and presence unavailable without leaking errors', async t => {
+  const before = clientCreations;
+  const f = eventFixture(t);
+  nextWebhookError = new Error('private-listener-token-and-path');
+  f.api.emit('didFinishLaunching');
+  await f.platform.presenceReady;
+  assert.equal(f.platform.presenceMonitor.getState('home').available, false);
+  assert.equal(f.platform.presenceWebhook.closed, true);
+  assert.equal(f.characteristic('lock').get(), false);
+  assert.equal(f.warnings.length, 1);
+  assert.doesNotMatch(f.warnings[0], /private-listener/);
+  assert.equal(clientCreations, before);
+});
+
+test('shutdown during listener startup and runtime listener errors fail closed without a vehicle call', async t => {
+  const before = clientCreations;
+  const f = eventFixture(t);
+  f.api.emit('didFinishLaunching');
+  f.api.emit('shutdown');
+  await f.platform.presenceReady;
+  assert.equal(f.platform.presenceWebhook.closed, true);
+  assert.equal(f.platform.presenceMonitor.getState('home').available, false);
+  const other = eventFixture(t);
+  other.api.emit('didFinishLaunching');
+  await other.platform.presenceReady;
+  other.platform.presenceWebhook.options.onError(new Error('private-error'));
+  assert.equal(other.platform.presenceWebhook.closed, true);
+  assert.equal(other.platform.presenceMonitor.getState('home').available, false);
+  assert.equal(other.warnings.length, 1);
+  assert.equal(clientCreations, before);
+});
 
 test('invalid controls or enabled presence configuration never removes cached accessories', () => {
   const before = clientCreations;

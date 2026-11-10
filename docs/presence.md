@@ -2,6 +2,8 @@
 
 This opt-in feature compares the vehicle's observed position with saved places such as Home or Work. It exposes an occupancy sensor for each place. The compatibility and testing baseline is the **2023 Cadillac Escalade ESV**; another model's capabilities are not assumed.
 
+This page describes the `polling` source. The optional [`events` source](event-presence.md) accepts arrival/departure alerts from an external relay, preserves the same accessories, and makes no scheduled GPS requests.
+
 This guide describes unreleased functionality. Both stale and fresh telemetry were checked on the target Escalade. An earlier response contained a GPS observation over two hours old despite a recent server processing time; the packaged location checker later confirmed a fresh observation aged two seconds. Actual arrival/departure boundary crossings still must be validated on the target vehicle before relying on an automation. Location presence does not change the vehicle's locks, engine, horn, or lights.
 
 ## Configure places

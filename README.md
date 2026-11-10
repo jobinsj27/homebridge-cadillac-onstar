@@ -17,7 +17,7 @@ This is an independent, unofficial integration using [OnStarJS2](https://github.
 
 Each command switch resets off after its request completes or fails. Turning a command switch off sends no command. These are command buttons, not indicators of engine, door, or alert state. The display prefix is configurable. The original four controls are enabled by default; Find Car and Stop Alert are an optional pair.
 
-Optional **Cadillac at Home** or **Cadillac at Work** occupancy sensors report whether the vehicle is inside a configured location boundary. They can trigger Apple Home automations. Presence is disabled by default and requires fresh vehicle-location data; see [the presence guide](docs/presence.md).
+Optional **Cadillac at Home** or **Cadillac at Work** occupancy sensors report vehicle presence at configured places and can trigger Apple Home automations. Presence is disabled by default. Choose [GPS polling](docs/presence.md), which requires fresh vehicle-location data, or [arrival/departure events](docs/event-presence.md), which require a separate authenticated alert relay and make no scheduled vehicle-location requests.
 
 Stop cancels remote start; it is not a general-purpose engine kill switch after a driver takes over. Use remote start only outdoors, never in an enclosed garage.
 
@@ -32,7 +32,7 @@ Stop cancels remote start; it is not a general-purpose engine kill switch after 
 
 The compatibility and testing baseline is a **2023 Cadillac Escalade ESV**. Real lock/unlock validation and both stale and fresh location-response checks used that vehicle. The packaged location checker confirmed a fresh GPS observation aged two seconds; an earlier response contained a GPS observation over two hours old despite a recent server processing time. Its reported capabilities also confirmed alert and cancel-alert support. Actual arrival/departure boundary crossings and physical horn-and-lights activation remain untested. Other models and regions have not been validated. There are no EV charging controls, liftgate controls, battery/fuel indicators, or live lock-state reporting.
 
-For location presence, the vehicle and connected-service plan must support locating the vehicle. Confirm Vehicle Locate works in myCadillac. A successful HTTP response or a map pin alone does not prove that the location is recent enough for an automation.
+For GPS presence, the vehicle and connected-service plan must support locating the vehicle. Confirm Vehicle Locate works in myCadillac. A successful HTTP response or a map pin alone does not prove that the location is recent enough for an automation. Event presence requires working arrival/departure alerts and a relay tested against the actual messages.
 
 Remote-start duration is controlled by the vehicle. The plugin keeps a 15-minute local duplicate-start guard after a confirmed request; it does not impose a universal 15-minute runtime on all Cadillac models. Consult your vehicle's manual for its limits. The guard clears when Homebridge restarts.
 
@@ -100,8 +100,10 @@ Use a child bridge so reconnecting or restarting the integration does not interr
 | `accessoryUuidPrefix` | `homebridge-cadillac-onstar` | Advanced migration option; leave unchanged after pairing |
 | `controls.start`, `controls.stop`, `controls.lock`, `controls.unlock` | `true` | Show the corresponding command switch |
 | `controls.findCar` | `false` | Show both Find Car and Stop Alert |
-| `presence.enabled` | `false` | Enable location polling and named-place presence sensors |
-| `presence.locations` | Empty | Named coordinates and arrival/departure boundaries; see the presence guide |
+| `presence.enabled` | `false` | Enable named-place presence sensors using the selected source |
+| `presence.source` | `polling` | `polling` for GPS observations, or `events` for an authenticated alert relay |
+| `presence.locations` | Empty | Stable place IDs and names; polling additionally requires coordinates and boundaries |
+| `presence.webhook` | Unset | Event receiver and private token/state paths; see the event presence guide |
 
 Keep credential and token files mode `0600` and their private directories mode `0700`. Browser downloads belong in a `.cache` directory, which Homebridge UI excludes from its backups. Saved tokens remain outside that directory and should be treated as account credentials.
 
@@ -121,7 +123,7 @@ Omitted flags keep their defaults. Use JSON booleans, not strings. Disabling a c
 
 ## Command behavior
 
-Only an explicit on-write to a command switch requests an engine, door, or alert action. Startup, reconnection, accessory reads, off-writes, switch resets, timers, and shutdown do not request those actions. When presence is enabled, background timers separately request vehicle-location telemetry; HomeKit reads use the latest local result.
+Only an explicit on-write to a command switch requests an engine, door, or alert action. Startup, reconnection, accessory reads, off-writes, switch resets, timers, and shutdown do not request those actions. When presence uses the polling source, background timers separately request vehicle-location telemetry; event mode makes no scheduled vehicle-location requests. HomeKit reads use the latest local result.
 
 Only one vehicle operation may run at a time. Additional command requests are rejected as busy rather than queued. A background location poll skips a busy command; a manual command during an in-flight location read also returns Busy. Location refreshes allow up to 90 seconds of SDK polling within a 120-second runtime request deadline. Failed commands are not retried by the plugin. OnStarJS2 retains its upstream API-version fallback behavior.
 
@@ -133,13 +135,15 @@ Command accessories use HomeKit's Switch service, including Unlock. They do not 
 
 ## Vehicle presence and automations
 
-Configure one or more places to expose a sensor such as **Cadillac at Home**. One vehicle-location request supplies all places. Separate arrival and departure radii and consecutive fresh observations help avoid false changes near a boundary.
+Configure one or more places to expose a sensor such as **Cadillac at Home**. In polling mode, one vehicle-location request supplies all places. Separate arrival and departure radii and consecutive fresh observations help avoid false changes near a boundary.
 
-Failed refreshes retain an established state only while its GPS observation remains fresh. Once that observation expires, the sensor becomes unavailable; it does not mean the vehicle departed. One new fresh fix matching the previous state can restore availability; a different or unknown state still requires confirmation samples. Initial readings and recovery from an outage establish a baseline without emitting an arrival/departure notification. The optional switch mirror is a status indicator whose manual writes are rejected, not a way to change the vehicle's reported location.
+In polling mode, failed refreshes retain an established state only while its GPS observation remains fresh. Once that observation expires, the sensor becomes unavailable; it does not mean the vehicle departed. One new fresh fix matching the previous state can restore availability; a different or unknown state still requires confirmation samples. Initial readings and recovery from an outage establish a baseline without emitting an arrival/departure notification. The optional switch mirror is a status indicator whose manual writes are rejected, not a way to change the vehicle's reported location.
 
-Presence follows the **vehicle**, not its occupants. For a cleaning routine, add Apple Home's “nobody is home” condition if people may remain home after the car leaves. Location polling has cloud and vehicle delays, so it does not establish that a car has cleared a garage doorway. Use the garage door's normal obstruction protection and appropriate additional conditions for garage automations.
+Event mode instead accepts explicit arrival/departure messages from an authenticated relay, such as a separately configured Google Voice-to-Gmail workflow. It persists the last accepted state and rejects duplicate or out-of-order events. An initial event or restored state establishes a silent baseline. No GPS polling or ten-minute GPS expiry applies, but a missed alert can leave the last known state incorrect. The plugin does not provide Gmail authorization or Cadillac message parsing; actual alert messages must be verified before connecting the relay.
 
-See [the presence guide](docs/presence.md) for configuration, freshness rules, polling, test steps, and privacy.
+Presence follows the **vehicle**, not its occupants. For a cleaning routine, add Apple Home's “nobody is home” condition if people may remain home after the car leaves. Both polling and alerts have cloud and vehicle delays, so neither establishes that a car has cleared a garage doorway. Use the garage door's normal obstruction protection and appropriate additional conditions for garage automations.
+
+See [the GPS presence guide](docs/presence.md) for polling and freshness, or [the event presence guide](docs/event-presence.md) for the webhook contract, SMS relay setup, state behavior, and validation.
 
 ## Upgrading the original local plugin
 
@@ -153,9 +157,9 @@ See [the migration guide](docs/migration.md) before replacing a paired local ins
 
 Check myCadillac first when commands fail. GM authentication changes, plan entitlements, vehicle connectivity, and remote-start limits still apply. If the saved session expires or is revoked, sign in again manually.
 
-The runtime isolates the unofficial SDK and discards its console output because upstream messages may contain account data. Commands expose fixed status/error categories; location presence uses only validated location observations. Raw SDK responses and errors are not logged. The SDK version and bundle checksum are pinned; an unexpected upstream version fails closed until reviewed.
+The runtime isolates the unofficial SDK and discards its console output because upstream messages may contain account data. Commands expose fixed status/error categories. GPS presence validates location observations; event presence validates authenticated event payloads. Raw SDK responses and errors are not logged. The SDK version and bundle checksum are pinned; an unexpected upstream version fails closed until reviewed.
 
-There is no analytics or automatic diagnostics polling. Vehicle-location polling runs only when explicitly enabled. The plugin does not store trip history. Place coordinates are part of your Homebridge configuration and its backups; remove them before sharing configuration. See [SECURITY.md](SECURITY.md) for sensitive-file handling and vulnerability reports. Do not upload credentials, saved tokens, browser profiles, private login files, coordinates, or unreviewed SDK logs.
+There is no analytics or automatic diagnostics polling. Vehicle-location polling runs only when presence is enabled with the polling source. The plugin does not store trip history. Place coordinates are part of your Homebridge configuration and its backups; remove them before sharing configuration. Event mode stores private last-known state and bounded duplicate-detection information. See [SECURITY.md](SECURITY.md) for sensitive-file handling and vulnerability reports. Do not upload credentials, saved tokens, browser profiles, private login files, webhook tokens or state, coordinates, or unreviewed SDK logs.
 
 ## Development
 

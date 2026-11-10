@@ -59,13 +59,41 @@ function fixture(options = {}) {
 test('presence is opt-in and disabled configurations do not poll', async () => {
   for (const value of [undefined, null, {}, { enabled: false, locations: 'dormant-invalid-value' }]) {
     assert.deepEqual(normalizePresenceConfig(value), {
-      enabled: false, locations: [], pollIntervalSeconds: 300,
+      enabled: false, source: 'polling', locations: [], pollIntervalSeconds: 300,
       maxLocationAgeSeconds: 600, confirmationSamples: 2, exposeSwitch: false,
     });
     const monitor = new PresenceMonitor({ config: value, readLocation: () => assert.fail('disabled poll') });
     monitor.start();
     monitor.shutdown();
   }
+});
+
+test('event source accepts named places without GPS and requires private input paths', () => {
+  const value = { enabled: true, source: 'events', exposeSwitch: true,
+    locations: [{ id: 'home', name: 'Home' }], webhook: {
+      tokenFile: '/synthetic/private/presence.token', stateFile: '/synthetic/private/presence.json',
+    } };
+  const normalized = normalizePresenceConfig(value);
+  assert.equal(normalized.source, 'events');
+  assert.equal(normalized.webhook.host, '127.0.0.1');
+  assert.equal(normalized.webhook.port, 8584);
+  assert.equal(normalized.maxEventAgeSeconds, 3600);
+  assert.equal(normalized.pollIntervalSeconds, undefined);
+  assert.deepEqual(normalized.locations, [{ id: 'home', name: 'Home' }]);
+  assert.throws(() => new PresenceMonitor({ config: value, readLocation() {} }), { code: 'PRESENCE_CONFIG' });
+  for (const override of [
+    { tokenFile: 'relative' }, { stateFile: 'relative' }, { host: 'not-an-ip' },
+    { port: 0 }, { port: 65536 }, { maxEventAgeSeconds: 0 },
+    { stateFile: value.webhook.tokenFile },
+  ]) {
+    assert.throws(() => normalizePresenceConfig({ ...value, webhook: { ...value.webhook, ...override } }),
+      { code: 'PRESENCE_CONFIG' });
+  }
+  for (const invalid of [
+    { ...value, source: 'sms' }, { ...value, webhook: undefined },
+    { ...value, locations: [{ id: 'home' }, { id: 'home' }] },
+    { ...value, locations: [{ id: '../private' }] },
+  ]) assert.throws(() => normalizePresenceConfig(invalid), { code: 'PRESENCE_CONFIG' });
 });
 
 test('enabled configuration validates locations, unique identity and numeric limits without exposing values', () => {
