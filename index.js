@@ -143,7 +143,7 @@ class CadillacPlatform {
     if (this.presenceConfig.enabled) {
       this.presenceMonitor = new PresenceMonitor({
         config: this.presenceConfig,
-        readLocation: () => this.controller.getLocation(),
+        readLocation: () => this.readPresenceLocation(),
         onUpdate: snapshot => this.updatePresence(snapshot),
       });
       for (const place of this.presenceConfig.locations) {
@@ -206,6 +206,37 @@ class CadillacPlatform {
     if (!accessory) return;
     this.api.unregisterPlatformAccessories(PLUGIN, PLATFORM, [accessory]);
     this.cached.delete(id);
+  }
+
+  async readPresenceLocation() {
+    let sample;
+    try {
+      sample = await this.controller.getLocation();
+    } catch (error) {
+      // A deliberate command can temporarily own the shared gate. It is not
+      // an API failure and should not produce a location outage warning.
+      if (error?.code !== 'BUSY') this.reportLocationHealth('failed');
+      throw error;
+    }
+    const age = Date.now() - sample?.observedAt;
+    this.reportLocationHealth(Number.isFinite(sample?.observedAt) && age >= 0
+      && age < this.presenceConfig.maxLocationAgeSeconds * 1000 ? 'fresh' : 'unavailable');
+    return sample;
+  }
+
+  reportLocationHealth(state) {
+    if (state === this.locationHealth) return;
+    const previous = this.locationHealth;
+    this.locationHealth = state;
+    // Fixed, transition-only messages provide useful diagnostics without
+    // exposing coordinates, place names, raw SDK errors or account details.
+    if (state === 'fresh') {
+      if (previous) this.log.info?.('OnStar location refresh recovered; fresh GPS observations are available.');
+    } else {
+      this.log.warn(state === 'failed'
+        ? 'OnStar location request failed; polling will retry. The last confirmed fix is used only while it remains fresh.'
+        : 'OnStar returned stale or unusable GPS data. Presence will be unavailable once the last confirmed fix expires.');
+    }
   }
 
   updatePresence(snapshot) {

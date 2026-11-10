@@ -493,6 +493,36 @@ test('presence baselines are silent, confirmed crossings notify, and stale GPS n
   assert.deepEqual(counts(), finalCounts);
 });
 
+test('location diagnostics report health transitions without raw errors or telemetry', async () => {
+  const { api, platform, warnings } = fixture(presenceConfig());
+  const recovery = [];
+  platform.log.info = message => recovery.push(message);
+  api.emit('didFinishLaunching');
+  const read = () => platform.presenceMonitor.options.readLocation();
+  const sample = { latitude: 12, longitude: 34, observedAt: Date.now() };
+  platform.controller.getLocation = async () => sample;
+  assert.equal(await read(), sample);
+  assert.deepEqual(warnings, []);
+  assert.deepEqual(recovery, []);
+  platform.controller.getLocation = async () => { throw Object.assign(new Error('private-account-url'), { code: 'BUSY' }); };
+  await assert.rejects(read(), { code: 'BUSY' });
+  assert.deepEqual(warnings, []);
+  platform.controller.getLocation = async () => { throw new Error('private-account-url'); };
+  await assert.rejects(read());
+  await assert.rejects(read());
+  assert.equal(warnings.length, 1);
+  platform.controller.getLocation = async () => ({ ...sample, observedAt: 1 });
+  await read();
+  await read();
+  assert.equal(warnings.length, 2);
+  platform.controller.getLocation = async () => sample;
+  await read();
+  await read();
+  assert.equal(recovery.length, 1);
+  assert.doesNotMatch(JSON.stringify([...warnings, ...recovery]), /private-account|latitude|longitude|12|34/);
+  api.emit('shutdown');
+});
+
 test('a silent presence baseline clears a cached HAP read fault without publishing a crossing', () => {
   const { api, platform } = fixture(presenceConfig({ exposeSwitch: true }));
   api.emit('didFinishLaunching');

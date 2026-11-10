@@ -135,7 +135,7 @@ Command accessories use HomeKit's Switch service, including Unlock. They do not 
 
 Configure one or more places to expose a sensor such as **Cadillac at Home**. One vehicle-location request supplies all places. Separate arrival and departure radii and consecutive fresh observations help avoid false changes near a boundary.
 
-Expired, incomplete, missing, or unusable location data makes the sensor unavailable; it does not mean the vehicle departed. Initial readings and recovery from an outage establish a baseline instead of emitting an arrival/departure notification. The optional switch mirror is a status indicator whose manual writes are rejected, not a way to change the vehicle's reported location.
+Failed refreshes retain an established state only while its GPS observation remains fresh. Once that observation expires, the sensor becomes unavailable; it does not mean the vehicle departed. One new fresh fix matching the previous state can restore availability; a different or unknown state still requires confirmation samples. Initial readings and recovery from an outage establish a baseline without emitting an arrival/departure notification. The optional switch mirror is a status indicator whose manual writes are rejected, not a way to change the vehicle's reported location.
 
 Presence follows the **vehicle**, not its occupants. For a cleaning routine, add Apple Home's “nobody is home” condition if people may remain home after the car leaves. Location polling has cloud and vehicle delays, so it does not establish that a car has cleared a garage doorway. Use the garage door's normal obstruction protection and appropriate additional conditions for garage automations.
 

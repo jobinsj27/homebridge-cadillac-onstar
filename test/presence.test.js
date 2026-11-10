@@ -228,16 +228,18 @@ test('a status read rejects stale state even before a delayed expiry callback ha
 });
 
 test('outages preserve the last state and recovery establishes a new baseline without a synthetic crossing', async () => {
-  const f = fixture();
+  const f = fixture({ maxLocationAgeSeconds: 120 });
   f.monitor.start();
   await flush();
   await f.clock.advance(60000);
   f.respond(() => { throw new Error('secret-account-details'); });
   await f.clock.advance(60000);
   assert.equal(f.monitor.getState('home').present, true);
+  assert.equal(f.monitor.getState('home').available, true);
+  await f.clock.advance(60000); // The observation expires before the retry succeeds.
   assert.equal(f.monitor.getState('home').available, false);
   f.respond(() => ({ latitude: 1, longitude: 1, observedAt: f.clock.now() }));
-  await f.clock.advance(120000); // First read after failure backoff.
+  await f.clock.advance(120000); // First read after the second failure backs off.
   assert.equal(f.monitor.getState('home').available, false);
   await f.clock.advance(60000);
   assert.equal(f.monitor.getState('home').present, false);
@@ -248,7 +250,120 @@ test('outages preserve the last state and recovery establishes a new baseline wi
   f.monitor.shutdown();
 });
 
-test('failures back off with a cap while BUSY skips without invalidating a fresh location', async () => {
+test('one transient failure retains a fresh confirmed state and retries at the configured cadence', async () => {
+  const f = fixture();
+  f.monitor.start();
+  await flush();
+  await f.clock.advance(60000);
+  const confirmedAt = f.monitor.getState('home').observedAt;
+  f.respond(() => { throw new Error('network'); });
+  await f.clock.advance(60000);
+  assert.equal(f.monitor.getState('home').available, true);
+  assert.equal(f.monitor.getState('home').observedAt, confirmedAt);
+  assert.equal(f.calls(), 3);
+  f.respond(() => ({ latitude: 0, longitude: 0, observedAt: f.clock.now() }));
+  await f.clock.advance(59999);
+  assert.equal(f.calls(), 3);
+  await f.clock.advance(1);
+  assert.equal(f.calls(), 4);
+  assert.equal(f.monitor.getState('home').available, true);
+  assert.equal(f.monitor.getState('home').observedAt, f.clock.now());
+  assert.equal(f.events.some(e => !e.available && e.present !== null), false);
+  assert.equal(f.events.some(e => e.changed), false);
+  f.monitor.shutdown();
+});
+
+test('unusable observations preserve a prior fresh state only until its original deadline', async () => {
+  for (const unusable of [
+    () => ({ latitude: 10, longitude: 10, observedAt: 1 }),
+    now => ({ latitude: 10, longitude: 10, observedAt: now + 1 }),
+    now => ({ latitude: '10', longitude: 10, observedAt: now }),
+    () => null,
+    () => { throw Object.assign(new Error('unavailable'), { code: 'LOCATION_UNAVAILABLE' }); },
+  ]) {
+    const f = fixture({ confirmationSamples: 1, maxLocationAgeSeconds: 180 });
+    f.monitor.start();
+    await flush();
+    const confirmedAt = f.monitor.getState('home').observedAt;
+    f.respond(() => unusable(f.clock.now()));
+    await f.clock.advance(179999);
+    assert.equal(f.monitor.getState('home').available, true);
+    assert.equal(f.monitor.getState('home').observedAt, confirmedAt);
+    await f.clock.advance(1);
+    assert.equal(f.monitor.getState('home').available, false);
+    assert.equal(f.monitor.getState('home').present, true);
+    assert.equal(f.monitor.getState('home').observedAt, confirmedAt);
+    assert.equal(f.events.some(e => e.changed), false);
+    assert.equal(f.calls(), 4); // Invalid data retains the normal polling interval.
+    f.monitor.shutdown();
+  }
+});
+
+test('a failed read resets unconfirmed initial states and boundary crossings', async () => {
+  for (const confirmed of [false, true]) {
+    const f = fixture();
+    f.monitor.start();
+    await flush();
+    if (confirmed) {
+      await f.clock.advance(60000);
+      f.move(400);
+      await f.clock.advance(60000); // First departure candidate.
+    }
+    const prior = confirmed ? true : null;
+    f.respond(() => { throw new Error('network'); });
+    await f.clock.advance(60000);
+    f.respond(() => ({ latitude: confirmed ? 1 : 0, longitude: 0, observedAt: f.clock.now() }));
+    await f.clock.advance(60000);
+    assert.equal(f.monitor.getState('home').present, prior);
+    await f.clock.advance(60000);
+    assert.equal(f.monitor.getState('home').present, !confirmed);
+    assert.equal(f.events.filter(e => e.changed).length, confirmed ? 1 : 0);
+    f.monitor.shutdown();
+  }
+});
+
+test('one distinct fresh fix silently recovers the same confirmed state after expiry', async () => {
+  for (const present of [false, true]) {
+    const f = fixture({ maxLocationAgeSeconds: 120 });
+    f.move(present ? 0 : 400);
+    f.monitor.start();
+    await flush();
+    await f.clock.advance(60000);
+    assert.equal(f.monitor.getState('home').present, present);
+    f.respond(() => { throw new Error('network'); });
+    await f.clock.advance(120000);
+    assert.equal(f.monitor.getState('home').available, false);
+    f.respond(() => ({ latitude: present ? 0 : 1, longitude: 0, observedAt: f.clock.now() }));
+    await f.clock.advance(120000);
+    assert.equal(f.monitor.getState('home').available, true);
+    assert.equal(f.monitor.getState('home').present, present);
+    assert.equal(f.events.at(-1).baseline, true);
+    assert.equal(f.events.some(e => e.changed), false);
+    f.monitor.shutdown();
+  }
+});
+
+test('a delayed expiry callback cannot make fresh recovery publish a synthetic crossing', async () => {
+  const f = fixture({ maxLocationAgeSeconds: 120 });
+  f.monitor.start();
+  await flush();
+  await f.clock.advance(60000);
+  f.move(400);
+  await f.clock.advance(60000); // A pending departure is not yet confirmed.
+  f.clock.time += 120000; // Do not run the expiry callback or any poll timer.
+  f.monitor.accept({ latitude: 1, longitude: 0, observedAt: f.clock.now() });
+  assert.equal(f.monitor.getState('home').available, false);
+  assert.equal(f.monitor.getState('home').present, true);
+  f.clock.time += 1;
+  f.monitor.accept({ latitude: 1, longitude: 0, observedAt: f.clock.now() });
+  assert.equal(f.monitor.getState('home').available, true);
+  assert.equal(f.monitor.getState('home').present, false);
+  assert.equal(f.events.at(-1).baseline, true);
+  assert.equal(f.events.some(e => e.changed), false);
+  f.monitor.shutdown();
+});
+
+test('repeated failures back off with a cap while BUSY skips without invalidating a fresh location', async () => {
   const f = fixture({ confirmationSamples: 1, maxLocationAgeSeconds: 86400 });
   f.monitor.start();
   await flush();
@@ -260,21 +375,18 @@ test('failures back off with a cap while BUSY skips without invalidating a fresh
   assert.equal(f.calls(), 3);
   f.respond(() => { throw new Error('network'); });
   await f.clock.advance(60000);
-  const count = f.calls();
-  await f.clock.advance(119999);
-  assert.equal(f.calls(), count);
-  await f.clock.advance(1);
-  assert.equal(f.calls(), count + 1);
-  await f.clock.advance(239999);
-  assert.equal(f.calls(), count + 1);
-  await f.clock.advance(1);
-  assert.equal(f.calls(), count + 2);
-  await f.clock.advance(480000 + 960000 + 1920000);
-  const capped = f.calls();
-  await f.clock.advance(3599999);
-  assert.equal(f.calls(), capped);
-  await f.clock.advance(1);
-  assert.equal(f.calls(), capped + 1);
+  for (const delay of [60000, 120000, 240000, 480000, 960000, 1920000, 3600000, 3600000]) {
+    const count = f.calls();
+    await f.clock.advance(delay - 1);
+    assert.equal(f.calls(), count);
+    await f.clock.advance(1);
+    assert.equal(f.calls(), count + 1);
+  }
+  f.respond(() => ({ latitude: 0, longitude: 0, observedAt: f.clock.now() }));
+  await f.clock.advance(3600000);
+  const recovered = f.calls();
+  await f.clock.advance(60000);
+  assert.equal(f.calls(), recovered + 1); // A successful read resets the backoff.
   f.monitor.shutdown();
 });
 

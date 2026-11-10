@@ -6,6 +6,8 @@
 - Optional momentary Find Car and Stop Alert controls for the 2023 Cadillac Escalade ESV compatibility baseline.
 - Opt-in named-place occupancy sensors with optional status-switch mirrors, shared vehicle-location polling, separate arrival/departure boundaries, and fresh-sample confirmation.
 - Unavailable location handling, polling backoff, and baseline establishment after startup or connection loss to avoid inventing arrivals or departures.
+- Preserve still-fresh presence through a failed refresh, retry the first failure at the configured interval, and recover a previously confirmed state from one new matching fix. Freshness expiry and confirmation of changed states remain enforced.
+- Add transition-only location health logs without coordinates, account information or raw API errors.
 - Presence configuration and validation guidance, with no EV charging or liftgate features.
 - A bounded `cadillac-onstar-check location` command reporting observation age and freshness without coordinates.
 - Corrected installation guidance for the upstream dependency's browser-download lifecycle script; explicit installs use `--ignore-scripts`.
