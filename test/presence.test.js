@@ -411,6 +411,104 @@ test('parked stale GPS and unavailable fixes retain the configured cadence until
   f.monitor.shutdown();
 });
 
+test('pending startup refreshes retry in 30 seconds but cannot establish presence', async () => {
+  const f = fixture();
+  f.respond(() => { throw Object.assign(new Error('private-pending-payload'), { code: 'LOCATION_PENDING' }); });
+  f.monitor.start();
+  await flush();
+  await f.clock.advance(29999);
+  assert.equal(f.calls(), 1);
+  await f.clock.advance(1);
+  assert.equal(f.calls(), 2);
+  assert.equal(f.monitor.getState('home').present, null);
+  assert.equal(f.monitor.getState('home').available, false);
+  assert.equal(f.events.length, 0);
+  f.respond(() => ({ latitude: 0, longitude: 0, observedAt: f.clock.now() }));
+  await f.clock.advance(30000);
+  assert.equal(f.calls(), 3);
+  assert.equal(f.monitor.getState('home').present, null); // Only one real fix.
+  await f.clock.advance(59999);
+  assert.equal(f.calls(), 3); // Completion restores the configured cadence.
+  await f.clock.advance(1);
+  assert.equal(f.calls(), 4);
+  assert.equal(f.monitor.getState('home').present, true);
+  assert.equal(f.monitor.getState('home').available, true);
+  assert.equal(f.events.filter(e => e.baseline).length, 1);
+  assert.equal(f.events.some(e => e.changed), false);
+  assert.doesNotMatch(JSON.stringify(f.events), /private/);
+  f.monitor.shutdown();
+});
+
+test('pending reads preserve a fresh candidate but never count toward a crossing', async () => {
+  const f = fixture({ pollIntervalSeconds: 300 });
+  f.monitor.start();
+  await flush();
+  await f.clock.advance(300000);
+  assert.equal(f.monitor.getState('home').present, true);
+  f.move(400);
+  await f.clock.advance(300000); // First fresh departure observation.
+  f.respond(() => { throw Object.assign(new Error('pending'), { code: 'LOCATION_PENDING' }); });
+  await f.clock.advance(330000); // Normal scheduled poll, then one 30s follow-up.
+  assert.equal(f.monitor.getState('home').present, true);
+  assert.equal(f.monitor.getState('home').available, true);
+  assert.equal(f.events.some(e => e.changed), false);
+  f.respond(() => ({ latitude: 1, longitude: 0, observedAt: f.clock.now() }));
+  await f.clock.advance(30000);
+  assert.equal(f.monitor.getState('home').present, false);
+  assert.equal(f.monitor.getState('home').available, true);
+  assert.deepEqual(f.events.filter(e => e.changed).map(e => e.present), [false]);
+  f.monitor.shutdown();
+});
+
+test('pending follow-ups do not extend freshness and return to normal cadence after the SDK window expires', async () => {
+  const f = fixture({ confirmationSamples: 1, maxLocationAgeSeconds: 120 });
+  f.monitor.start();
+  await flush();
+  const observedAt = f.monitor.getState('home').observedAt;
+  f.respond(() => { throw Object.assign(new Error('pending'), { code: 'LOCATION_PENDING' }); });
+  await f.clock.advance(90000);
+  assert.equal(f.monitor.getState('home').available, true);
+  assert.equal(f.calls(), 3);
+  await f.clock.advance(30000);
+  assert.equal(f.monitor.getState('home').available, false);
+  assert.equal(f.monitor.getState('home').present, true);
+  assert.equal(f.monitor.getState('home').observedAt, observedAt);
+  assert.equal(f.events.some(e => e.changed), false);
+  f.respond(() => { throw Object.assign(new Error('refresh window expired'), { code: 'LOCATION_UNAVAILABLE' }); });
+  await f.clock.advance(30000);
+  const count = f.calls();
+  await f.clock.advance(59999);
+  assert.equal(f.calls(), count);
+  await f.clock.advance(1);
+  assert.equal(f.calls(), count + 1);
+  f.monitor.shutdown();
+});
+
+test('pending continuation resets transport backoff without counting a duplicate observation', async () => {
+  const f = fixture();
+  const firstObservedAt = f.clock.now();
+  f.monitor.start();
+  await flush();
+  f.respond(() => { throw new Error('transport'); });
+  await f.clock.advance(120000); // Two transport failures: next poll after 120s.
+  f.respond(() => { throw Object.assign(new Error('pending'), { code: 'LOCATION_PENDING' }); });
+  await f.clock.advance(120000);
+  const count = f.calls();
+  f.respond(() => ({ latitude: 0, longitude: 0, observedAt: firstObservedAt }));
+  await f.clock.advance(30000);
+  assert.equal(f.calls(), count + 1);
+  assert.equal(f.monitor.getState('home').present, null);
+  assert.equal(f.monitor.getState('home').observedAt, firstObservedAt);
+  f.respond(() => ({ latitude: 0, longitude: 0, observedAt: f.clock.now() }));
+  await f.clock.advance(60000);
+  assert.equal(f.calls(), count + 2);
+  assert.equal(f.monitor.getState('home').present, null);
+  await f.clock.advance(60000);
+  assert.equal(f.monitor.getState('home').present, true);
+  assert.equal(f.events.some(e => e.changed), false);
+  f.monitor.shutdown();
+});
+
 test('shutdown discards in-flight results, clears timers and cannot be restarted', async () => {
   const f = fixture();
   let resolvePending;

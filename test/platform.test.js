@@ -507,6 +507,9 @@ test('location diagnostics report health transitions without raw errors or telem
   platform.controller.getLocation = async () => { throw Object.assign(new Error('private-account-url'), { code: 'BUSY' }); };
   await assert.rejects(read(), { code: 'BUSY' });
   assert.deepEqual(warnings, []);
+  platform.controller.getLocation = async () => { throw Object.assign(new Error('private-account-url'), { code: 'LOCATION_PENDING' }); };
+  await assert.rejects(read(), { code: 'LOCATION_PENDING' });
+  assert.deepEqual(warnings, []);
   platform.controller.getLocation = async () => { throw new Error('private-account-url'); };
   await assert.rejects(read());
   await assert.rejects(read());

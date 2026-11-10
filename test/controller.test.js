@@ -480,3 +480,24 @@ test('unavailable GPS remains distinct from transport failure for normal polling
   await assert.rejects(controller.getLocation(), { code: 'LOCATION_UNAVAILABLE', message: 'LOCATION_UNAVAILABLE' });
   assert.equal(controller.busy, false); controller.shutdown();
 });
+
+test('pending location remains distinct, releases the gate and never becomes an actuator retry', async () => {
+  let pending = true;
+  const sample = { latitude: 12, longitude: 34, observedAt: 1000 };
+  const { controller, calls } = fixture({ location: () => {
+    if (pending) throw Object.assign(new Error('private-location-details'), { code: 'LOCATION_PENDING' });
+    return sample;
+  } });
+  await controller.setLocked(true);
+  await assert.rejects(controller.getLocation(), { code: 'LOCATION_PENDING', message: 'LOCATION_PENDING' });
+  assert.equal(controller.busy, false);
+  assert.equal(controller.getLocked(), true);
+  assert.deepEqual(calls, ['lockDoor', 'location']);
+  // A deliberate command can run between passive continuation reads.
+  await controller.setLocked(false);
+  pending = false;
+  assert.deepEqual(await controller.getLocation(), sample);
+  assert.deepEqual(calls, ['lockDoor', 'location', 'unlockDoor', 'location']);
+  assert.equal(controller.busy, false);
+  controller.shutdown();
+});

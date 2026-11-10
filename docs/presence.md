@@ -51,6 +51,8 @@ Add this `presence` object to the existing `CadillacOnStar` platform configurati
 
 One location poll is shared across every configured place. Multiple places do not multiply vehicle requests. Background polling does not start when presence is disabled.
 
+GM can finish a requested GPS update asynchronously. If an update is still pending, the plugin checks that same request every 30 seconds without sending another vehicle refresh request. These follow-up checks stop after a three-minute pending window; normal polling resumes after completion or timeout. Waiting does not count as a location confirmation or extend the age of an older fix.
+
 ## Presence and freshness
 
 A place is present when accepted observations establish that the car is within its arrival boundary. After presence is established, it remains present until observations establish that the car is beyond its larger departure boundary. Readings between the two boundaries retain the established state. This gap helps prevent GPS drift from repeatedly triggering automations.

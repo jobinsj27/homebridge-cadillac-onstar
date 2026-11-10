@@ -215,7 +215,10 @@ class CadillacPlatform {
     } catch (error) {
       // A deliberate command can temporarily own the shared gate. It is not
       // an API failure and should not produce a location outage warning.
-      if (error?.code !== 'BUSY') this.reportLocationHealth('failed');
+      if (!['BUSY', 'LOCATION_PENDING'].includes(error?.code)) this.reportLocationHealth('failed');
+      if (error?.code === 'LOCATION_PENDING') {
+        this.log.debug?.('OnStar GPS refresh is pending; the next check will collect the existing request.');
+      }
       throw error;
     }
     const age = Date.now() - sample?.observedAt;

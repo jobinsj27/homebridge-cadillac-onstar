@@ -9,6 +9,7 @@
 - Preserve still-fresh presence through a failed refresh, retry the first failure at the configured interval, and recover a previously confirmed state from one new matching fix. Freshness expiry and confirmation of changed states remain enforced.
 - Add transition-only location health logs without coordinates, account information or raw API errors.
 - Allow 90 seconds for an asynchronous vehicle GPS refresh within a 120-second runtime request deadline, so a normal delayed update is not cut short by the earlier 20/35-second limits.
+- Collect a pending GPS refresh with passive follow-up checks every 30 seconds instead of starting another vehicle refresh; stop pending retries after three minutes and preserve genuine timestamp expiry.
 - Presence configuration and validation guidance, with no EV charging or liftgate features.
 - A bounded `cadillac-onstar-check location` command reporting observation age and freshness without coordinates.
 - Corrected installation guidance for the upstream dependency's browser-download lifecycle script; explicit installs use `--ignore-scripts`.

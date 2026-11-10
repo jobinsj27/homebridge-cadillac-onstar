@@ -190,12 +190,47 @@ test('startup deadline closes a worker that never becomes ready', async () => {
   assert.equal(clock.timers.size, 0);
 });
 
-test('only the allowlisted unavailable-location code survives the worker boundary', async () => {
+test('only the allowlisted location codes survive the worker boundary for location requests', async () => {
   const { client, worker } = await readyClient();
-  for (const [code, expected] of [['LOCATION_UNAVAILABLE', 'LOCATION_UNAVAILABLE'], ['SECRET_RAW_ERROR', 'COMMAND_FAILED']]) {
+  for (const [code, expected] of [['LOCATION_UNAVAILABLE', 'LOCATION_UNAVAILABLE'],
+    ['LOCATION_PENDING', 'LOCATION_PENDING'], ['SECRET_RAW_ERROR', 'COMMAND_FAILED']]) {
     const request = client.location();
     worker.emit('message', { error: code });
     await assert.rejects(request, { code: expected });
   }
+  for (const method of ['start', 'cancelStart', 'lockDoor', 'unlockDoor', 'alert', 'cancelAlert']) {
+    for (const code of ['LOCATION_UNAVAILABLE', 'LOCATION_PENDING']) {
+      const request = client[method]();
+      worker.emit('message', { error: code });
+      await assert.rejects(request, { code: 'COMMAND_FAILED' });
+    }
+  }
+  await client.shutdown();
+});
+
+test('a pending location reply clears its deadline and permits an explicit follow-up on the same worker', async () => {
+  const clock = fakeClock();
+  const creating = createClient('/synthetic/credentials.json', undefined, clock);
+  const worker = FakeWorker.instances.at(-1);
+  worker.emit('message', { ready: true });
+  const client = await creating;
+  const pending = client.location();
+  worker.emit('message', { error: 'LOCATION_PENDING', message: 'SECRET_RESPONSE' });
+  await assert.rejects(pending, error => {
+    assert.equal(error.code, 'LOCATION_PENDING');
+    assert.doesNotMatch(String(error), /SECRET_RESPONSE/);
+    return true;
+  });
+  assert.equal(clock.timers.size, 0);
+  await clock.advance(30000);
+  assert.equal(client.closed, false);
+  assert.equal(worker.terminated, false);
+  assert.deepEqual(worker.messages, [{ method: 'location' }]);
+  const followup = client.location();
+  const sample = { latitude: 12, longitude: 34, observedAt: 1000 };
+  worker.emit('message', { result: sample });
+  assert.deepEqual(await followup, sample);
+  assert.deepEqual(worker.messages, [{ method: 'location' }, { method: 'location' }]);
+  assert.equal(clock.timers.size, 0);
   await client.shutdown();
 });

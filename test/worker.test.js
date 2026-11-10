@@ -44,6 +44,37 @@ test('malformed location and underlying exceptions expose no raw values', async 
   }
 });
 
+test('pending and unavailable location codes stay private and never classify actuator failures as location work', async () => {
+  for (const code of ['LOCATION_PENDING', 'LOCATION_UNAVAILABLE']) {
+    for (const method of ['location', 'start', 'cancelStart', 'lockDoor', 'unlockDoor', 'alert', 'cancelAlert']) {
+      const probe = workerWith({ [method]: async () => {
+        throw Object.assign(new Error('SECRET_ACCOUNT_AND_COORDINATES'), { code, response: { token: 'SECRET_TOKEN' } });
+      } });
+      await probe.dispatch({ method });
+      assert.deepEqual(probe.messages, [{ ready: true }, { error: method === 'location' ? code : 'COMMAND_FAILED' }]);
+      assert.doesNotMatch(JSON.stringify(probe.messages), /SECRET|response/);
+    }
+  }
+});
+
+test('a pending location response releases the worker gate for an explicit follow-up without replay', async () => {
+  let calls = 0;
+  const probe = workerWith({ location: async () => {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error('SECRET_PENDING_DETAILS'), { code: 'LOCATION_PENDING' });
+    return { status: 'success', response: { data: { telemetry: {
+      occurredTs: '2026-01-01T00:00:00Z', data: { session: { updatePending: 'NONE' }, position: { lat: 12, lng: 34 } },
+    } } } };
+  } });
+  await probe.dispatch({ method: 'location' });
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.deepEqual(probe.messages.at(-1), { error: 'LOCATION_PENDING' });
+  await probe.dispatch({ method: 'location' });
+  assert.equal(calls, 2);
+  assert.deepEqual(probe.messages.at(-1), { result: { latitude: 12, longitude: 34, observedAt: 1767225600000 } });
+});
+
 test('malformed status objects and unrecognized strings never cross the worker boundary', async () => {
   const probe = workerWith({ alert: async () => ({ status: { token: 'SECRET' },
     response: { data: { status: 'SECRET_PASSWORD', commandResponse: { status: ['SECRET_ARRAY'] } } } }) });

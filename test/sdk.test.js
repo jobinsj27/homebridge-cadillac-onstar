@@ -6,8 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
-const { createClient, assertSupportedSource, secureTokenWrites, SAVED_SESSION_PATCH, PINNED_VERSION,
-  LOCATION_POLLING_TIMEOUT_SECONDS } = require('../lib/sdk');
+const { createClient, assertSupportedSource, enableLocationContinuation, secureTokenWrites, SAVED_SESSION_PATCH, PINNED_VERSION,
+  LOCATION_POLLING_TIMEOUT_SECONDS, LOCATION_PENDING_WINDOW_MS } = require('../lib/sdk');
 
 const identity = {
   username: 'synthetic@example.test',
@@ -50,11 +50,14 @@ test('location restores previous polling and retry settings after success or fai
     const service = client.requestService;
     service.setRequestPollingTimeoutSeconds(45);
     const previousRetries = service.config.max429Retries;
+    const hadRetries = Object.hasOwn(service.config, 'max429Retries');
+    service.cadillacLocationRefresh = false;
     const failure = new Error('synthetic-location-failure');
     const result = { synthetic: true };
     service.location = async () => {
       assert.equal(service.requestPollingTimeoutSeconds, 90);
       assert.equal(service.config.max429Retries, 0);
+      assert.equal(service.cadillacLocationRefresh, true);
       if (rejects) throw failure;
       return result;
     };
@@ -62,6 +65,8 @@ test('location restores previous polling and retry settings after success or fai
     else assert.equal(await client.location(), result);
     assert.equal(service.requestPollingTimeoutSeconds, 45);
     assert.equal(service.config.max429Retries, previousRetries);
+    assert.equal(Object.hasOwn(service.config, 'max429Retries'), hadRetries);
+    assert.equal(service.cadillacLocationRefresh, false);
   }
 });
 
@@ -73,22 +78,156 @@ test('a still-pending refresh stops at the location polling budget and remains u
   let now = 1000000;
   const startedAt = now;
   let requests = 0;
+  let pendingResponse;
   t.mock.method(Date, 'now', () => now);
   service.delay = async milliseconds => { now += milliseconds; };
   service.sendRequest = async () => {
     requests += 1;
-    return { status: 'success', response: { data: { telemetry: {
+    pendingResponse = { status: 'success', response: { data: { telemetry: {
       occurredTs: new Date(now).toISOString(), data: {
         session: { updatePending: 'PENDING' }, position: { lat: 0, lng: 0 },
       },
     } } } };
+    return pendingResponse;
   };
-  const result = await client.location();
+  await assert.rejects(client.location(), { code: 'LOCATION_PENDING' });
   assert.equal(now - startedAt, 90000);
   assert.equal(requests, 16);
-  assert.throws(() => require('../lib/location').normalizeLocationResult(result), { code: 'LOCATION_UNAVAILABLE' });
+  assert.throws(() => require('../lib/location').normalizeLocationResult(pendingResponse), { code: 'LOCATION_UNAVAILABLE' });
   assert.equal(service.requestPollingTimeoutSeconds, previousTimeout);
   assert.equal(service.config.max429Retries, previousRetries);
+  assert.equal(Object.hasOwn(service, 'cadillacLocationRefresh'), false);
+});
+
+function locationResult(pending, now) {
+  return { status: 'success', response: { data: { telemetry: {
+    occurredTs: new Date(now).toISOString(), data: {
+      session: { updatePending: pending }, position: { lat: 0, lng: 0 },
+    },
+  } } } };
+}
+
+function locationHarness(t) {
+  const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+  const service = client.requestService;
+  let now = 1000000;
+  let response = () => locationResult('PENDING', now);
+  const requests = [];
+  t.mock.method(Date, 'now', () => now);
+  // Exercise the patched pinned SDK while replacing its only HTTP boundary.
+  service.delay = async milliseconds => { now += milliseconds; };
+  service.sendRequest = async request => {
+    requests.push({ refresh: new URL(request.getUrl()).searchParams.get('sms') === 'true',
+      timeout: service.requestPollingTimeoutSeconds, retries: service.config.max429Retries });
+    return response();
+  };
+  return { client, service, requests, now: () => now,
+    advance: milliseconds => { now += milliseconds; }, respond: callback => { response = callback; } };
+}
+
+test('pending refresh checks use cached snapshots until completion without sending another SMS', async (t) => {
+  const h = locationHarness(t);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  const initialRequests = h.requests.length;
+  h.advance(30000);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  assert.equal(h.requests.length, initialRequests + 1);
+  assert.deepEqual(h.requests.at(-1), { refresh: false, timeout: 0, retries: 0 });
+  h.advance(30000);
+  h.respond(() => locationResult('NONE', h.now()));
+  const completed = await h.client.location();
+  assert.equal(require('../lib/location').normalizeLocationResult(completed).observedAt, h.now());
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  assert.equal(h.service.requestPollingTimeoutSeconds, 90);
+  assert.equal(Object.hasOwn(h.service, 'cadillacLocationRefresh'), false);
+  await h.client.location();
+  assert.equal(h.requests.filter(r => r.refresh).length, 2); // Completion ends continuation mode.
+});
+
+test('pending continuation expires from the initial request start and never accepts pending coordinates', async (t) => {
+  const h = locationHarness(t);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  assert.equal(LOCATION_PENDING_WINDOW_MS, 180000);
+  h.advance(90000); // The first request already spent ninety seconds polling.
+  await assert.rejects(h.client.location(), { code: 'LOCATION_UNAVAILABLE' });
+  assert.deepEqual(h.requests.at(-1), { refresh: false, timeout: 0, retries: 0 });
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  h.respond(() => locationResult('NONE', h.now()));
+  await h.client.location();
+  assert.equal(h.requests.filter(r => r.refresh).length, 2);
+});
+
+test('a late completed cached snapshot is validated without starting a duplicate refresh', async (t) => {
+  const h = locationHarness(t);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  h.advance(LOCATION_PENDING_WINDOW_MS);
+  h.respond(() => locationResult('NONE', h.now()));
+  const completed = await h.client.location();
+  assert.equal(require('../lib/location').normalizeLocationResult(completed).observedAt, h.now());
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  assert.equal(h.requests.at(-1).refresh, false);
+});
+
+test('transport failures retain pending continuation within its window and expire without raw errors', async (t) => {
+  for (const delay of [10000, 90000]) {
+    const h = locationHarness(t);
+    await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+    h.advance(delay);
+    h.respond(() => { throw new Error('private-request-url'); });
+    await assert.rejects(h.client.location(), error => {
+      assert.equal(error.code, delay === 10000 ? 'LOCATION_PENDING' : 'LOCATION_UNAVAILABLE');
+      assert.doesNotMatch(String(error), /private-request-url/);
+      return true;
+    });
+    assert.equal(h.requests.filter(r => r.refresh).length, 1);
+    h.respond(() => locationResult('NONE', h.now()));
+    await h.client.location();
+    assert.equal(h.requests.at(-1).refresh, delay === 90000);
+    assert.equal(h.service.requestPollingTimeoutSeconds, 90);
+    assert.equal(Object.hasOwn(h.service, 'cadillacLocationRefresh'), false);
+  }
+});
+
+test('pending authentication and rate-limit failures retain continuation but use the normal error path', async (t) => {
+  for (const status of [401, 403, 429]) {
+    for (const getter of [false, true]) {
+      const h = locationHarness(t);
+      await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+      h.advance(10000);
+      const error = Object.assign(new Error('private-response'), getter
+        ? { getResponse: () => ({ status }) } : { response: { status } });
+      h.respond(() => { throw error; });
+      await assert.rejects(h.client.location(), actual => actual === error);
+      h.respond(() => locationResult('NONE', h.now()));
+      await h.client.location();
+      assert.equal(h.requests.filter(r => r.refresh).length, 1);
+      assert.equal(h.requests.at(-1).refresh, false);
+    }
+  }
+});
+
+test('malformed nonpending results remain subject to normalization and clear continuation mode', async (t) => {
+  for (const malformed of [{}, { status: 'failure' }, locationResult('FAILED', 1000000),
+    { status: 'success', response: { data: { telemetry: { data: { session: { updatePending: 'NONE' } } } } } }]) {
+    const h = locationHarness(t);
+    await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+    h.respond(() => malformed);
+    assert.equal(await h.client.location(), malformed);
+    assert.throws(() => require('../lib/location').normalizeLocationResult(malformed), { code: 'LOCATION_UNAVAILABLE' });
+    h.respond(() => locationResult('NONE', h.now()));
+    await h.client.location();
+    assert.equal(h.requests.filter(r => r.refresh).length, 2);
+  }
+});
+
+test('the location continuation source patch requires exactly one known refresh site', () => {
+  const statement = 'let result = yield this.sendRequest(makeReq(true));';
+  for (const source of [undefined, '', statement + statement]) {
+    assert.throws(() => enableLocationContinuation(source), { code: 'SDK_UNSUPPORTED' });
+  }
+  assert.equal(enableLocationContinuation(statement),
+    'let result = yield this.sendRequest(makeReq(this.cadillacLocationRefresh !== false));');
 });
 
 function patchedSdk(overrides = {}, filesystem = { existsSync: () => false }) {
