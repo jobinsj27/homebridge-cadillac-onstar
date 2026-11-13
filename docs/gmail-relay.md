@@ -28,6 +28,6 @@ cadillac-onstar-gmail /absolute/private/desktop-client.json /absolute/private/gm
 }
 ```
 
-Each check searches the previous hour of forwarded Google Voice emails. The plugin reads new candidates, verifies the Google sender and US Vehicle Locate short code, and matches a complete message such as “Escalade arrived at homebridge” or “Escalade departed from homebridge.” These phrases come from app notifications. Actual forwarded Cadillac SMS wording still needs live validation. Unknown formats are ignored. Authorization grants read-only access to the mailbox. Processing uses the message's Gmail delivery time and a stable Gmail message ID.
+Each check searches the previous hour of forwarded Google Voice emails. The plugin reads new candidates, verifies the Google sender and US Vehicle Locate short code, and matches the vehicle and alert location in a complete message. Forwarded US Vehicle Locate texts use “Escalade has arrived at Homebridge” and “Escalade has departed from Homebridge” followed by an opt-out instruction. Unknown formats are ignored. Authorization grants read-only access to the mailbox. Processing uses the message's Gmail delivery time and a stable Gmail message ID.
 
 Duplicate deliveries and overlapping polls preserve the last confirmed state. The first event establishes a silent baseline. Interruptions longer than the one-hour search window can leave state stale until the next crossing. Google request failures trigger exponential backoff and respect Retry-After. [Presence behavior](event-presence.md)

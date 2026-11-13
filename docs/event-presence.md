@@ -2,7 +2,7 @@
 
 The optional `events` presence source accepts authenticated arrival/departure events from a separate relay. It updates the same occupancy sensors and optional status switches as GPS presence, with no scheduled vehicle-location requests. Keep the existing place IDs and accessory namespace when switching sources to preserve accessory identifiers.
 
-This feature is unreleased. Its compatibility baseline is the **2023 Cadillac Escalade ESV**. OnStar SMS enrollment and forwarding an ordinary Google Voice text to Gmail have been confirmed. Forwarding and interpreting actual Cadillac arrival/departure alerts, and the complete relay-to-Homebridge route, still need live validation. A [Gmail polling relay](gmail-relay.md) is available for testing with provisional SMS wording.
+This feature is unreleased. Its compatibility baseline is the **2023 Cadillac Escalade ESV**. The [Gmail polling relay](gmail-relay.md) recognizes actual US Vehicle Locate arrivals and departures forwarded by Google Voice.
 
 ## Configure the event receiver
 
@@ -79,7 +79,7 @@ A possible route is:
 
 Google Voice offers **Settings → Messages → Forward messages to email**, separately from voicemail email notifications. Enable forwarding before testing with a new message. OnStar currently lists Google Voice among its supported SMS carriers; confirm actual alert delivery on the configured number. [Google Voice forwarding instructions](https://support.google.com/voice/answer/165221?hl=en), [OnStar SMS policy](https://www.onstar.com/legal/user-terms/texting).
 
-The included [Gmail relay](gmail-relay.md) checks forwarded messages using read-only Google authorization. It maps a Cadillac alert name to a stable Homebridge place ID. The assumed wording still needs verification against live SMS.
+The included [Gmail relay](gmail-relay.md) checks forwarded messages using read-only Google authorization. It maps a Cadillac alert name to a stable Homebridge place ID.
 
 ## State and validation
 

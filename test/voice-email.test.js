@@ -52,6 +52,18 @@ test('authenticated no-reply sender requires the exact short-code subject', () =
   }
 });
 
+test('forwarded Vehicle Locate SMS accepts both Google Voice footer variants and wrapped opt-out text', () => {
+  const trailer = footer.replace('#messages>', '#messaging>');
+  const reply = 'To respond to this message, launch Google Voice (https://voice.google.com)\r\non your mobile device or computer.';
+  for (const [direction, phrase] of [['arrived', 'has arrived at'], ['departed', 'has departed from']]) {
+    const body = ['<https://voice.google.com>', 'Escalade ' + phrase + ' Homebridge. Send "STOP" to end Vehicle Locate',
+      'texts.', ...(direction === 'departed' ? [reply] : []), trailer].join('\r\n');
+    assert.equal(parse(header(message(body), 'From', 'Google Voice <voice-noreply@google.com>'))?.event, direction);
+    assert.equal(parse(message(body.replace('Homebridge.', 'Work.'))), null);
+    assert.equal(parse(message(body + '\r\nAnother alert')), null);
+  }
+});
+
 test('only first Authentication-Results from mx.google.com can establish authentication', () => {
   for (const value of ['', 'other.example; dkim=pass header.i=@google.com; dmarc=pass header.from=google.com',
     auth.replace('dkim=pass', 'dkim=fail'), auth.replace('dmarc=pass', 'dmarc=fail'),
