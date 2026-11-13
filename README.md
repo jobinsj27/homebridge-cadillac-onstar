@@ -19,6 +19,8 @@ Each command switch resets off after its request completes or fails. Turning a c
 
 Optional **Cadillac at Home** or **Cadillac at Work** occupancy sensors report vehicle presence at configured places and can trigger Apple Home automations. Presence is disabled by default. Choose [GPS polling](docs/presence.md), which requires fresh vehicle-location data, or [arrival/departure events](docs/event-presence.md), which require a separate authenticated alert relay and make no scheduled vehicle-location requests.
 
+The [Google Voice / Gmail relay](docs/gmail-relay.md) can deliver boundary events from your mailbox.
+
 Stop cancels remote start; it is not a general-purpose engine kill switch after a driver takes over. Use remote start only outdoors, never in an enclosed garage.
 
 ## Compatibility and limits

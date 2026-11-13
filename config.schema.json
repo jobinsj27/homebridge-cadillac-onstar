@@ -98,9 +98,19 @@
           "source": {
             "title": "Presence source",
             "type": "string",
-            "enum": ["polling", "events"],
+            "enum": ["polling", "events", "gmail"],
             "default": "polling",
             "description": "Events uses an external SMS/email relay and disables all scheduled GPS polling. Requires real arrival/departure alerts; see the event presence guide."
+          },
+          "gmail": {
+            "title": "Gmail polling",
+            "type": "object",
+            "description": "Checks Google Voice emails once a minute. Configure one Homebridge place and its matching Cadillac alert name.",
+            "properties": {
+              "sessionFile": { "type": "string", "title": "Private Gmail OAuth session file" },
+              "stateFile": { "type": "string", "title": "Private alert state file" },
+              "locationName": { "type": "string", "title": "Place name in the Cadillac message" }
+            }
           },
           "webhook": {
             "title": "Alert input (events source only)",

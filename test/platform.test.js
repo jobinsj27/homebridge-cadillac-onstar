@@ -479,6 +479,27 @@ test('event presence retains accessory IDs, persists crossings, and never opens 
   assert.equal(clientCreations, before);
 });
 
+test('Gmail mode checks the mailbox locally and stops polling on Homebridge shutdown', async t => {
+  const before = clientCreations;
+  const { config } = eventFixture(t);
+  const { stateFile } = config.presence.webhook;
+  let signal;
+  t.mock.method(require('../lib/gmail'), 'openMailbox', () => ({
+    list: async (_after, requestSignal) => { signal = requestSignal; return {}; },
+  }));
+  const f = fixture(presenceConfig({ source: 'gmail', locations: [{ id: 'home' }],
+    gmail: { sessionFile: stateFile + '.oauth', stateFile, locationName: 'homebridge' } }));
+  t.after(() => f.api.emit('shutdown'));
+  f.api.emit('didFinishLaunching');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(signal.aborted, false);
+  assert.equal(f.platform.presenceWebhook, undefined);
+  assert.equal(f.platform.presenceMonitor.getState('home').available, false);
+  f.api.emit('shutdown');
+  assert.equal(signal.aborted, true);
+  assert.equal(clientCreations, before);
+});
+
 test('event listener failure leaves commands available and presence unavailable without leaking errors', async t => {
   const before = clientCreations;
   const f = eventFixture(t);

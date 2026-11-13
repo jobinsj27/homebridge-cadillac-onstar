@@ -50,6 +50,7 @@ try {
     'cadillac-onstar-login': 'bin/manual-login.js',
     'cadillac-onstar-check': 'bin/check-connection.js',
     'cadillac-onstar-migrate': 'bin/migrate-legacy.js',
+    'cadillac-onstar-gmail': 'bin/gmail.js',
   });
   process.stdout.write(`Package inspected: ${paths.length} allowed files; no private state or credentials included.\n`);
 } finally {

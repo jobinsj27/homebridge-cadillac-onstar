@@ -65,6 +65,7 @@ class CadillacPlatform {
       this.closed = true;
       for (const handle of this.resetHandles) clearImmediate(handle);
       this.resetHandles.clear();
+      this.gmailPoller?.shutdown();
       void this.presenceWebhook?.shutdown();
       this.presenceMonitor?.shutdown();
       this.controller.shutdown();
@@ -145,8 +146,8 @@ class CadillacPlatform {
     }
     if (this.presenceConfig.enabled) {
       const options = { config: this.presenceConfig, onUpdate: snapshot => this.updatePresence(snapshot) };
-      this.presenceMonitor = this.presenceConfig.source === 'events'
-        ? new EventPresenceMonitor({ ...options, stateFile: this.presenceConfig.webhook.stateFile })
+      this.presenceMonitor = this.presenceConfig.source !== 'polling'
+        ? new EventPresenceMonitor({ ...options, stateFile: (this.presenceConfig.gmail || this.presenceConfig.webhook).stateFile })
         : new PresenceMonitor({ ...options, readLocation: () => this.readPresenceLocation() });
       for (const place of this.presenceConfig.locations) {
         const sensors = [];
@@ -200,7 +201,7 @@ class CadillacPlatform {
         this.removeCached(id);
       }
     }
-    if (this.presenceConfig.source === 'events') this.startEventPresence();
+    if (this.presenceConfig.source !== 'polling') this.startEventPresence();
     else this.presenceMonitor?.start();
   }
 
@@ -213,11 +214,26 @@ class CadillacPlatform {
       for (const place of this.presenceConfig.locations) {
         this.updatePresence({ id: place.id, available: false });
       }
+      this.gmailPoller?.shutdown();
       void this.presenceWebhook?.shutdown();
-      this.log.warn('Presence alert input is unavailable. Check private event files and listener settings, then restart Homebridge.');
+      this.log.warn(this.presenceConfig.source === 'gmail'
+        ? 'Gmail presence is unavailable. Check the private session and state files, then restart Homebridge.'
+        : 'Presence alert input is unavailable. Check private event files and listener settings, then restart Homebridge.');
     };
     try {
       this.presenceMonitor.start();
+      if (this.presenceConfig.source === 'gmail') {
+        const { GmailPoller, openMailbox } = require('./lib/gmail');
+        const gmail = this.presenceConfig.gmail;
+        this.gmailPoller = new GmailPoller({
+          config: { vehicleName: this.vehicleName, locationName: gmail.locationName, locationId: this.presenceConfig.locations[0].id },
+          mailbox: openMailbox(gmail.sessionFile),
+          accept: event => this.presenceMonitor.accept(event),
+          warn: warning => this.log.warn(warning),
+        });
+        this.gmailPoller.start();
+        return;
+      }
       this.presenceWebhook = new PresenceWebhook({
         ...this.presenceConfig.webhook,
         onEvent: event => this.presenceMonitor.accept(event),

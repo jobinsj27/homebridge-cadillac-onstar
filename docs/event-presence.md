@@ -2,7 +2,7 @@
 
 The optional `events` presence source accepts authenticated arrival/departure events from a separate relay. It updates the same occupancy sensors and optional status switches as GPS presence, with no scheduled vehicle-location requests. Keep the existing place IDs and accessory namespace when switching sources to preserve accessory identifiers.
 
-This feature is unreleased. Its compatibility baseline is the **2023 Cadillac Escalade ESV**. OnStar SMS enrollment and forwarding an ordinary Google Voice text to Gmail have been confirmed. Forwarding and interpreting actual Cadillac arrival/departure alerts, and the complete relay-to-Homebridge route, still need live validation. The plugin does not include a Gmail connection or an automatic Cadillac message parser.
+This feature is unreleased. Its compatibility baseline is the **2023 Cadillac Escalade ESV**. OnStar SMS enrollment and forwarding an ordinary Google Voice text to Gmail have been confirmed. Forwarding and interpreting actual Cadillac arrival/departure alerts, and the complete relay-to-Homebridge route, still need live validation. A [Gmail polling relay](gmail-relay.md) is available for testing with provisional SMS wording.
 
 ## Configure the event receiver
 
@@ -79,14 +79,7 @@ A possible route is:
 
 Google Voice offers **Settings → Messages → Forward messages to email**, separately from voicemail email notifications. Enable forwarding before testing with a new message. OnStar currently lists Google Voice among its supported SMS carriers; confirm actual alert delivery on the configured number. [Google Voice forwarding instructions](https://support.google.com/voice/answer/165221?hl=en), [OnStar SMS policy](https://www.onstar.com/legal/user-terms/texting).
 
-The relay needs its own persistent Gmail authorization. Access to Gmail in an assistant chat does not provision that authorization for a server. Two possible implementations are:
-
-- Gmail's API with Cloud Pub/Sub notifications. Maintain the mailbox watch, retrieve the changed messages, and handle duplicate or missed notifications. [Gmail push documentation](https://developers.google.com/workspace/gmail/api/guides/push).
-- An n8n Gmail Trigger and an authenticated HTTP request to this receiver. The Gmail Trigger polls the mailbox at its configured interval; it does not poll the vehicle. [n8n Gmail Trigger documentation](https://docs.n8n.io/integrations/builtin/trigger-nodes/n8n-nodes-base.gmailtrigger/).
-
-Before enabling a relay, collect one real arrival alert and one real departure alert. Verify the authenticated email source, the original SMS sender, the vehicle, the place, and the direction against those messages. Match the full verified message format, and reject unrecognized or ambiguous messages. A display name or a word such as “home” or “arrived” alone is insufficient. Enrollment confirmations, ordinary test texts, and arbitrary emails must never create presence events. Do not guess the Cadillac message template.
-
-Forward only the four event fields. Use a stable source identifier, such as the Gmail message ID, for `eventId`. Restrict the relay to the selected vehicle and places, and keep its credentials and message history private. No relay or parsing rule is automatically created by enabling the plugin's event receiver.
+The included [Gmail relay](gmail-relay.md) checks forwarded messages using read-only Google authorization. It maps a Cadillac alert name to a stable Homebridge place ID. The assumed wording still needs verification against live SMS.
 
 ## State and validation
 

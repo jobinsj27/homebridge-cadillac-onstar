@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Optional outbound Gmail relay for Google Voice boundary alerts, with read-only OAuth and provisional Escalade arrival/departure matching.
+
 - Optional controls for the existing Start, Stop, Lock, and Unlock switches, preserving their accessory identifiers.
 - Optional momentary Find Car and Stop Alert controls for the 2023 Cadillac Escalade ESV compatibility baseline.
 - Opt-in named-place occupancy sensors with optional status-switch mirrors, shared vehicle-location polling, separate arrival/departure boundaries, and fresh-sample confirmation.
