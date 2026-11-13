@@ -6,13 +6,229 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
-const { assertSupportedSource, secureTokenWrites, SAVED_SESSION_PATCH, PINNED_VERSION } = require('../lib/sdk');
+const { createClient, assertSupportedSource, enableLocationContinuation, secureTokenWrites, SAVED_SESSION_PATCH, PINNED_VERSION,
+  LOCATION_POLLING_TIMEOUT_SECONDS, LOCATION_PENDING_WINDOW_MS } = require('../lib/sdk');
 
 const identity = {
   username: 'synthetic@example.test',
   deviceId: '8e934cd0-8093-4bee-9ac4-5034e02f7548',
   tokenLocation: '/synthetic/private/tokens',
 };
+
+test('location permits a parked vehicle refresh beyond sixty seconds using the real SDK polling loop', async (t) => {
+  const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+  const service = client.requestService;
+  const previousTimeout = service.requestPollingTimeoutSeconds;
+  service.config.max429Retries = 4;
+  let now = 1000000;
+  const startedAt = now;
+  let requests = 0;
+  t.mock.method(Date, 'now', () => now);
+  // Only the pinned SDK's polling loop runs. These stubs prevent all HTTP,
+  // authentication, account-file reads and real waits.
+  service.delay = async milliseconds => { now += milliseconds; };
+  service.sendRequest = async () => {
+    requests += 1;
+    assert.equal(service.requestPollingTimeoutSeconds, 90);
+    assert.equal(service.config.max429Retries, 0);
+    return { status: 'success', response: { data: { telemetry: { data: {
+      session: { updatePending: now - startedAt >= 78000 ? 'NONE' : 'PENDING' },
+    } } } } };
+  };
+  const result = await client.location();
+  assert.equal(LOCATION_POLLING_TIMEOUT_SECONDS, 90);
+  assert.equal(now - startedAt, 78000);
+  assert.equal(requests, 14);
+  assert.equal(result.response.data.telemetry.data.session.updatePending, 'NONE');
+  assert.equal(service.requestPollingTimeoutSeconds, previousTimeout);
+  assert.equal(service.config.max429Retries, 4);
+});
+
+test('location restores previous polling and retry settings after success or failure', async () => {
+  for (const rejects of [false, true]) {
+    const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+    const service = client.requestService;
+    service.setRequestPollingTimeoutSeconds(45);
+    const previousRetries = service.config.max429Retries;
+    const hadRetries = Object.hasOwn(service.config, 'max429Retries');
+    service.cadillacLocationRefresh = false;
+    const failure = new Error('synthetic-location-failure');
+    const result = { synthetic: true };
+    service.location = async () => {
+      assert.equal(service.requestPollingTimeoutSeconds, 90);
+      assert.equal(service.config.max429Retries, 0);
+      assert.equal(service.cadillacLocationRefresh, true);
+      if (rejects) throw failure;
+      return result;
+    };
+    if (rejects) await assert.rejects(client.location(), error => error === failure);
+    else assert.equal(await client.location(), result);
+    assert.equal(service.requestPollingTimeoutSeconds, 45);
+    assert.equal(service.config.max429Retries, previousRetries);
+    assert.equal(Object.hasOwn(service.config, 'max429Retries'), hadRetries);
+    assert.equal(service.cadillacLocationRefresh, false);
+  }
+});
+
+test('a still-pending refresh stops at the location polling budget and remains unusable', async (t) => {
+  const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+  const service = client.requestService;
+  const previousTimeout = service.requestPollingTimeoutSeconds;
+  const previousRetries = service.config.max429Retries;
+  let now = 1000000;
+  const startedAt = now;
+  let requests = 0;
+  let pendingResponse;
+  t.mock.method(Date, 'now', () => now);
+  service.delay = async milliseconds => { now += milliseconds; };
+  service.sendRequest = async () => {
+    requests += 1;
+    pendingResponse = { status: 'success', response: { data: { telemetry: {
+      occurredTs: new Date(now).toISOString(), data: {
+        session: { updatePending: 'PENDING' }, position: { lat: 0, lng: 0 },
+      },
+    } } } };
+    return pendingResponse;
+  };
+  await assert.rejects(client.location(), { code: 'LOCATION_PENDING' });
+  assert.equal(now - startedAt, 90000);
+  assert.equal(requests, 16);
+  assert.throws(() => require('../lib/location').normalizeLocationResult(pendingResponse), { code: 'LOCATION_UNAVAILABLE' });
+  assert.equal(service.requestPollingTimeoutSeconds, previousTimeout);
+  assert.equal(service.config.max429Retries, previousRetries);
+  assert.equal(Object.hasOwn(service, 'cadillacLocationRefresh'), false);
+});
+
+function locationResult(pending, now) {
+  return { status: 'success', response: { data: { telemetry: {
+    occurredTs: new Date(now).toISOString(), data: {
+      session: { updatePending: pending }, position: { lat: 0, lng: 0 },
+    },
+  } } } };
+}
+
+function locationHarness(t) {
+  const client = createClient({ ...identity, vin: '1GYS4RKL0PR123456', authMode: 'savedSession' });
+  const service = client.requestService;
+  let now = 1000000;
+  let response = () => locationResult('PENDING', now);
+  const requests = [];
+  t.mock.method(Date, 'now', () => now);
+  // Exercise the patched pinned SDK while replacing its only HTTP boundary.
+  service.delay = async milliseconds => { now += milliseconds; };
+  service.sendRequest = async request => {
+    requests.push({ refresh: new URL(request.getUrl()).searchParams.get('sms') === 'true',
+      timeout: service.requestPollingTimeoutSeconds, retries: service.config.max429Retries });
+    return response();
+  };
+  return { client, service, requests, now: () => now,
+    advance: milliseconds => { now += milliseconds; }, respond: callback => { response = callback; } };
+}
+
+test('pending refresh checks use cached snapshots until completion without sending another SMS', async (t) => {
+  const h = locationHarness(t);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  const initialRequests = h.requests.length;
+  h.advance(30000);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  assert.equal(h.requests.length, initialRequests + 1);
+  assert.deepEqual(h.requests.at(-1), { refresh: false, timeout: 0, retries: 0 });
+  h.advance(30000);
+  h.respond(() => locationResult('NONE', h.now()));
+  const completed = await h.client.location();
+  assert.equal(require('../lib/location').normalizeLocationResult(completed).observedAt, h.now());
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  assert.equal(h.service.requestPollingTimeoutSeconds, 90);
+  assert.equal(Object.hasOwn(h.service, 'cadillacLocationRefresh'), false);
+  await h.client.location();
+  assert.equal(h.requests.filter(r => r.refresh).length, 2); // Completion ends continuation mode.
+});
+
+test('pending continuation expires from the initial request start and never accepts pending coordinates', async (t) => {
+  const h = locationHarness(t);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  assert.equal(LOCATION_PENDING_WINDOW_MS, 180000);
+  h.advance(90000); // The first request already spent ninety seconds polling.
+  await assert.rejects(h.client.location(), { code: 'LOCATION_UNAVAILABLE' });
+  assert.deepEqual(h.requests.at(-1), { refresh: false, timeout: 0, retries: 0 });
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  h.respond(() => locationResult('NONE', h.now()));
+  await h.client.location();
+  assert.equal(h.requests.filter(r => r.refresh).length, 2);
+});
+
+test('a late completed cached snapshot is validated without starting a duplicate refresh', async (t) => {
+  const h = locationHarness(t);
+  await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+  h.advance(LOCATION_PENDING_WINDOW_MS);
+  h.respond(() => locationResult('NONE', h.now()));
+  const completed = await h.client.location();
+  assert.equal(require('../lib/location').normalizeLocationResult(completed).observedAt, h.now());
+  assert.equal(h.requests.filter(r => r.refresh).length, 1);
+  assert.equal(h.requests.at(-1).refresh, false);
+});
+
+test('transport failures retain pending continuation within its window and expire without raw errors', async (t) => {
+  for (const delay of [10000, 90000]) {
+    const h = locationHarness(t);
+    await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+    h.advance(delay);
+    h.respond(() => { throw new Error('private-request-url'); });
+    await assert.rejects(h.client.location(), error => {
+      assert.equal(error.code, delay === 10000 ? 'LOCATION_PENDING' : 'LOCATION_UNAVAILABLE');
+      assert.doesNotMatch(String(error), /private-request-url/);
+      return true;
+    });
+    assert.equal(h.requests.filter(r => r.refresh).length, 1);
+    h.respond(() => locationResult('NONE', h.now()));
+    await h.client.location();
+    assert.equal(h.requests.at(-1).refresh, delay === 90000);
+    assert.equal(h.service.requestPollingTimeoutSeconds, 90);
+    assert.equal(Object.hasOwn(h.service, 'cadillacLocationRefresh'), false);
+  }
+});
+
+test('pending authentication and rate-limit failures retain continuation but use the normal error path', async (t) => {
+  for (const status of [401, 403, 429]) {
+    for (const getter of [false, true]) {
+      const h = locationHarness(t);
+      await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+      h.advance(10000);
+      const error = Object.assign(new Error('private-response'), getter
+        ? { getResponse: () => ({ status }) } : { response: { status } });
+      h.respond(() => { throw error; });
+      await assert.rejects(h.client.location(), actual => actual === error);
+      h.respond(() => locationResult('NONE', h.now()));
+      await h.client.location();
+      assert.equal(h.requests.filter(r => r.refresh).length, 1);
+      assert.equal(h.requests.at(-1).refresh, false);
+    }
+  }
+});
+
+test('malformed nonpending results remain subject to normalization and clear continuation mode', async (t) => {
+  for (const malformed of [{}, { status: 'failure' }, locationResult('FAILED', 1000000),
+    { status: 'success', response: { data: { telemetry: { data: { session: { updatePending: 'NONE' } } } } } }]) {
+    const h = locationHarness(t);
+    await assert.rejects(h.client.location(), { code: 'LOCATION_PENDING' });
+    h.respond(() => malformed);
+    assert.equal(await h.client.location(), malformed);
+    assert.throws(() => require('../lib/location').normalizeLocationResult(malformed), { code: 'LOCATION_UNAVAILABLE' });
+    h.respond(() => locationResult('NONE', h.now()));
+    await h.client.location();
+    assert.equal(h.requests.filter(r => r.refresh).length, 2);
+  }
+});
+
+test('the location continuation source patch requires exactly one known refresh site', () => {
+  const statement = 'let result = yield this.sendRequest(makeReq(true));';
+  for (const source of [undefined, '', statement + statement]) {
+    assert.throws(() => enableLocationContinuation(source), { code: 'SDK_UNSUPPORTED' });
+  }
+  assert.equal(enableLocationContinuation(statement),
+    'let result = yield this.sendRequest(makeReq(this.cadillacLocationRefresh !== false));');
+});
 
 function patchedSdk(overrides = {}, filesystem = { existsSync: () => false }) {
   const browserCalls = [];
@@ -82,6 +298,13 @@ class TokenWriter {
 globalThis.TokenWriter = TokenWriter;
 `;
 
+test('token-write instrumentation preserves the SDK strict-mode directive', () => {
+  const context = vm.createContext({ fs, path });
+  vm.runInContext(secureTokenWrites("'use strict';\n" + tokenWriterSource)
+    + '\nglobalThis.strictReceiver = (function() { return this; })();', context);
+  assert.equal(context.strictReceiver, undefined);
+});
+
 test('both Microsoft write paths and the GM write path create private token files', (t) => {
   const directory = temporaryTokenDirectory(t);
   const context = vm.createContext({ fs, path });
@@ -97,6 +320,31 @@ test('both Microsoft write paths and the GM write path create private token file
   writer.saveGMToken();
   assert.equal(fs.statSync(writer.GMTokenPath).mode & 0o777, 0o600);
   assert.equal(JSON.parse(fs.readFileSync(writer.GMTokenPath, 'utf8')).access_token, 'synthetic-gm-token');
+});
+
+test('failed atomic token replacement preserves the previous valid saved session', (t) => {
+  const directory = temporaryTokenDirectory(t);
+  const filename = path.join(directory, 'microsoft_tokens.json');
+  fs.writeFileSync(filename, '{"access_token":"synthetic-previous"}', { mode: 0o600 });
+  const filesystem = { ...fs, renameSync: () => { throw new Error('Synthetic disk failure'); } };
+  const context = vm.createContext({ fs: filesystem, path });
+  vm.runInContext(secureTokenWrites(tokenWriterSource), context);
+  const writer = new context.TokenWriter(directory);
+  assert.throws(() => writer.refreshedMicrosoftToken({ access_token: 'synthetic-new' }));
+  assert.equal(JSON.parse(fs.readFileSync(filename, 'utf8')).access_token, 'synthetic-previous');
+  assert.deepEqual(fs.readdirSync(directory), ['microsoft_tokens.json']);
+  assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
+});
+
+test('a temporary token filename collision never deletes another writers file', (t) => {
+  const directory = temporaryTokenDirectory(t);
+  const collision = path.join(directory, 'microsoft_tokens.json.123..tmp');
+  fs.writeFileSync(collision, 'synthetic-other-writer', { mode: 0o600 });
+  const context = vm.createContext({ fs, path, Date: { now: () => 123 }, Math: { random: () => 0 } });
+  vm.runInContext(secureTokenWrites(tokenWriterSource), context);
+  const writer = new context.TokenWriter(directory);
+  assert.throws(() => writer.refreshedMicrosoftToken({ access_token: 'synthetic-new' }), { code: 'EEXIST' });
+  assert.equal(fs.readFileSync(collision, 'utf8'), 'synthetic-other-writer');
 });
 
 test('existing Microsoft and GM token files become private before authentication reads them', async (t) => {

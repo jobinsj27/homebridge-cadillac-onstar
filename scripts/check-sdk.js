@@ -42,7 +42,7 @@ async function main() {
       deviceId: '8e934cd0-8093-4bee-9ac4-5034e02f7548',
       tokenLocation: directory,
     });
-    for (const method of ['start', 'cancelStart', 'lockDoor', 'unlockDoor', 'getVehicleDetails']) {
+    for (const method of ['start', 'cancelStart', 'lockDoor', 'unlockDoor', 'alert', 'cancelAlert', 'location', 'getVehicleDetails']) {
       assert.equal(typeof client[method], 'function');
     }
     assert.deepEqual(fs.readdirSync(directory), []);
